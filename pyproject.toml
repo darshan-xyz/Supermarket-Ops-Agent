@@ -1,0 +1,44 @@
+[project]
+name = "kirana-ops-agent"
+version = "0.1.0"
+description = "Conversational agent that runs an Indian kirana store from Telegram (Google Gemini API)"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "google-genai>=2.0.0",
+    "python-telegram-bot[job-queue]>=21.0",
+    "reportlab>=4.1",
+    "python-pptx>=0.6.23",
+    "python-dotenv>=1.0",
+    "num2words>=0.5.13",
+]
+
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.5",
+]
+
+[project.scripts]
+kirana-bot = "kirana.telegram.bot:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/kirana"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+ignore = ["E741", "E702"]

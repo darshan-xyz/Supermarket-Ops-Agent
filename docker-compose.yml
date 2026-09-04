@@ -1,0 +1,16 @@
+services:
+  kirana-bot:
+    build: .
+    restart: unless-stopped
+    environment:
+      # Locally: read from ./.env (compose auto-loads it).
+      GEMINI_API_KEY: ${GEMINI_API_KEY:?set GEMINI_API_KEY}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:?set TELEGRAM_BOT_TOKEN}
+      KIRANA_MODEL: ${KIRANA_MODEL:-gemini-3.6-flash}
+    volumes:
+      - kirana-data:/app/data              # SQLite store — survives redeploys
+      - kirana-artifacts:/app/artifacts_out
+
+volumes:
+  kirana-data:
+  kirana-artifacts:

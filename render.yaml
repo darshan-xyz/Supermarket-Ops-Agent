@@ -1,0 +1,25 @@
+# One-click deploy to Render (https://render.com). The bot uses long polling,
+# so it runs as a background worker (no public URL needed).
+#
+# Deploy: push this repo to GitHub, "New +" -> "Blueprint", point at the repo,
+# then set GEMINI_API_KEY and TELEGRAM_BOT_TOKEN in the dashboard.
+services:
+  - type: worker
+    name: kirana-ops-agent
+    runtime: docker
+    plan: starter            # a paid plan is needed for a persistent disk
+    dockerfilePath: ./Dockerfile
+    autoDeploy: true
+    disk:
+      name: kirana-data
+      mountPath: /app/data   # KIRANA_DB_PATH lives here -> durable across deploys
+      sizeGB: 1
+    envVars:
+      - key: GEMINI_API_KEY
+        sync: false          # set in dashboard (secret)
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false          # set in dashboard (secret)
+      - key: KIRANA_MODEL
+        value: gemini-3.6-flash
+      - key: KIRANA_DB_PATH
+        value: /app/data/kirana.db
