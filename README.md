@@ -58,47 +58,47 @@ Agent: 🧾 Processed draft cart #B-8831:
 The system is designed with a strict separation between the **Control Plane** (multi-tenant tenant registry and authentication) and the **Tenant Data Plane** (isolated SQLite databases per supermarket).
 
 ```mermaid
-graph TB
-    subgraph Client Layer ["Client & Gateway Layer"]
-        TG["📱 Telegram Client<br/>(Text, Voice Notes, Photos)"]
-        WEB["🌐 Web Gateway / Health Server<br/>(:8080 aiohttp /metrics)"]
+flowchart TB
+    subgraph CLIENTS["Client & Ingress Layer"]
+        TG["Telegram Client (Text, Voice Notes, Photos)"]
+        WEB["Web Gateway / Health Server (:8080)"]
     end
 
-    subgraph Auth & Ingress ["Auth & Router Control Plane"]
-        DEDUP["Update Deduplication<br/>(update_id cache)"]
-        ROUTER["Multi-Tenant Gateway<br/>(master.db)"]
-        OTP["In-Chat OTP Verifier<br/>(5-min TTL, 3 attempts)"]
+    subgraph AUTH["Control Plane & Router"]
+        DEDUP["Update Deduplication (update_id cache)"]
+        ROUTER["Multi-Tenant Gateway Router"]
+        OTP["In-Chat OTP Verifier (5-min TTL)"]
     end
 
-    subgraph Intelligence ["Agentic Intelligence Core"]
-        GEMINI["🧠 Google Gemini API<br/>(gemini-3.6-flash / google-genai)"]
-        PROMPT["Persona & Grounding Engine<br/>(Anti-Hallucination Rules)"]
-        GUARD["🛡️ Safety Guardrails<br/>(SQLi, Prompt Injection, Cost Bounds)"]
-        SESSION["Multi-Turn State Machine<br/>(Resilient SQLite Session Memory)"]
+    subgraph AGENT["Agentic Intelligence Core"]
+        GEMINI["Google Gemini API (gemini-3.6-flash)"]
+        PROMPT["Persona & Anti-Hallucination Guard"]
+        GUARD["Safety Guardrails (SQLi & Cost Bounds)"]
+        SESSION["Multi-Turn State Machine (SQLite)"]
     end
 
-    subgraph Tool Layer ["In-Process Tool Registry (32 Tools)"]
-        INV["📦 Inventory<br/>(FEFO, Restock, Alerts)"]
-        BILL["🧾 Billing & POS<br/>(Draft Carts, Idempotency)"]
-        KHATA["💳 Khata Ledger<br/>(Credit, Repayments)"]
-        CUST["👥 CRM & Customers<br/>(Profiles, History)"]
-        DOCS["📑 Artifacts<br/>(ReportLab PDF, PPTX Deck)"]
-        VAR["🏷️ Variants<br/>(Size, Pack, Scent)"]
+    subgraph TOOLBOX["In-Process Tool Registry (32 Tools)"]
+        INV["Inventory (FEFO, Restock, Alerts)"]
+        BILL["Billing POS (Carts, Idempotency)"]
+        KHATA["Khata Ledger (Credit & Repayment)"]
+        CUST["Customer CRM & History"]
+        DOCS["Artifacts (ReportLab PDF & PPTX Deck)"]
+        VAR["Product Variants & Sizing"]
     end
 
-    subgraph Storage ["Multi-Tenant Storage Engine"]
-        MASTER_DB[("Control Plane: master.db<br/>Tenants • Users • Auth Audit")]
-        TENANT_DB[("Tenant Data Plane: stores/store_*.db<br/>WAL Mode • BEGIN IMMEDIATE • Triggers")]
+    subgraph STORAGE["Multi-Tenant Storage Engine"]
+        MASTER_DB[("Control Plane: master.db")]
+        TENANT_DB[("Tenant Data Plane: stores/store_*.db")]
     end
 
     TG --> DEDUP --> ROUTER
     WEB --> ROUTER
     ROUTER --> OTP --> MASTER_DB
     ROUTER --> SESSION --> GEMINI
-    GEMINI <--> PROMPT
-    GEMINI <--> GUARD
-    GEMINI <--> Tool Layer
-    Tool Layer <--> TENANT_DB
+    GEMINI --- PROMPT
+    GEMINI --- GUARD
+    GEMINI --> INV & BILL & KHATA & CUST & DOCS & VAR
+    INV & BILL & KHATA & CUST & DOCS & VAR --> TENANT_DB
 ```
 
 ---
