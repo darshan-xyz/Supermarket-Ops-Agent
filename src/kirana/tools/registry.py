@@ -10,6 +10,7 @@ from google.genai import types
 
 from .analytics import ANALYTICS_TOOLS
 from .billing import BILLING_TOOLS
+from .customer import CUSTOMER_TOOLS
 from .documents import DOCUMENT_TOOLS
 from .inventory import INVENTORY_TOOLS
 from .khata import KHATA_TOOLS
@@ -19,6 +20,7 @@ from .base import KiranaTool
 ALL_TOOLS: list[KiranaTool] = [
     *INVENTORY_TOOLS,
     *BILLING_TOOLS,
+    *CUSTOMER_TOOLS,
     *KHATA_TOOLS,
     *ANALYTICS_TOOLS,
     *DOCUMENT_TOOLS,

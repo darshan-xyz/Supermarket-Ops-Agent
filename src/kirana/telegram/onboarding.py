@@ -14,6 +14,7 @@ Guides the store owner through:
 
 from __future__ import annotations
 
+import io
 import logging
 import re
 from dataclasses import dataclass, field
@@ -29,11 +30,14 @@ from telegram import (
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
+from ..config import PROJECT_ROOT
 from ..db.master import MasterRegistry, get_master_registry, normalize_phone
 from ..domain.money import format_inr
 from ..domain.units import format_qty
+from ..services.logo_service import validate_and_process_logo
 
 logger = logging.getLogger("kirana.onboarding")
+
 
 
 def normalize_lang(val: str | None) -> str:
@@ -64,9 +68,14 @@ def format_inventory_message(store_repo, lang: str = "en") -> str:
     for p in products:
         qty_str = format_qty(p.stock_base, p.unit)
         price_str = format_inr(p.sell_paise)
-        mrp_str = format_inr(p.mrp_paise)
+        mrp_str = format_inr(p.mrp_paise) if p.mrp_paise else ""
         mrp_tag = f" (MRP {mrp_str})" if p.mrp_paise and p.mrp_paise != p.sell_paise else ""
-        lines.append(f"• <b>{p.name}</b> — <code>{qty_str}</code> | {price_str}{mrp_tag}")
+        exp_row = store_repo.db.query_one(
+            "SELECT expiry FROM batches WHERE product_id=? AND qty_base > 0 AND expiry IS NOT NULL ORDER BY expiry ASC LIMIT 1",
+            (p.id,),
+        )
+        exp_tag = f" · ⏳ Exp: <code>{exp_row['expiry']}</code>" if exp_row and exp_row["expiry"] else ""
+        lines.append(f"• <b>{p.name}</b> — <code>{qty_str}</code> | {price_str}{mrp_tag}{exp_tag}")
 
     total_skus = len(products)
     footers = {
@@ -86,6 +95,7 @@ class OnboardingStep(str, Enum):
     AWAITING_OWNER_NAME = "awaiting_owner_name"
     AWAITING_ADDRESS = "awaiting_address"
     AWAITING_GSTIN = "awaiting_gstin"
+    AWAITING_LOGO = "awaiting_logo"
 
 
 @dataclass
@@ -99,7 +109,9 @@ class OnboardingState:
     owner_name: str = ""
     address: str = ""
     gstin: str | None = None
+    logo_path: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+
 
 
 # In-memory onboarding sessions keyed by chat_id
@@ -429,7 +441,7 @@ async def handle_onboarding_step(
         await msg.reply_text(texts.get(lang, texts["en"]), parse_mode=ParseMode.HTML)
         return True
 
-    # --- Step 6: Awaiting GSTIN & Provision Tenant ---
+    # --- Step 6: Awaiting GSTIN -> Advance to Logo ---
     if state.step == OnboardingStep.AWAITING_GSTIN:
         text = (msg.text or "").strip()
         gstin = None
@@ -437,6 +449,132 @@ async def handle_onboarding_step(
             gstin = text.upper()
 
         state.gstin = gstin
+        state.step = OnboardingStep.AWAITING_LOGO
+
+        gstin_note = f"🏷️ GSTIN: <b>{gstin}</b>\n\n" if gstin else "🏷️ GSTIN: <i>(Skipped / தவிர்க்கப்பட்டது / छोड़ दिया)</i>\n\n"
+
+        texts = {
+            "ta": (
+                f"{gstin_note}"
+                "🖼️ <b>கடையின் லோகோ (கட்டாயமானது):</b>\n\n"
+                "உங்கள் **கடையின் லோகோவை** (புகைப்படம் அல்லது படமாக) அனுப்பவும். "
+                "கடை அமைப்பை முடிக்க லோகோ பதிவேற்றம் கட்டாயமாகும். இது உங்கள் அனைத்து ஜிஎஸ்டி பில்கள், ரசீதுகள் மற்றும் விற்பனை அறிக்கைகளில் நேர்த்தியாக அச்சிடப்படும்!\n\n"
+                "👉 உங்கள் லோகோ படத்தை (<b>PNG, JPG அல்லது WEBP</b>) இப்போது அனுப்பவும்."
+            ),
+            "hi": (
+                f"{gstin_note}"
+                "🖼️ <b>स्टोर लोगो (अनिवार्य):</b>\n\n"
+                "कृपया अपने **स्टोर का लोगो** (फ़ोटो या इमेज फ़ाइल) भेजें। "
+                "स्टोर सेटअप पूरा करने के लिए लोगो अपलोड अनिवार्य है। यह आपके सभी जीएसटी इनवॉइस, बिल रसीदों और रिपोर्टों पर दिखेगा!\n\n"
+                "👉 अपने लोगो की इमेज (<b>PNG, JPG या WEBP</b>) अभी भेजें।"
+            ),
+            "en": (
+                f"{gstin_note}"
+                "🖼️ <b>Store Logo (Mandatory):</b>\n\n"
+                "Please upload your **Store Logo** (send a photo or image file). "
+                "Uploading a store logo is mandatory to proceed with store setup. This will appear on all your printed GST invoices, receipts, and reports!\n\n"
+                "👉 Send your logo image now (<b>PNG, JPG, or WEBP</b>)."
+            ),
+        }
+        await msg.reply_text(texts.get(lang, texts["en"]), parse_mode=ParseMode.HTML)
+        return True
+
+    # --- Step 7: Awaiting Logo (Mandatory) & Provision Tenant Store Database ---
+    if state.step == OnboardingStep.AWAITING_LOGO:
+        logo_path: str | None = None
+
+        # Case 1: User sent Photo
+        if msg.photo:
+            photo = msg.photo[-1]
+            photo_file = await context.bot.get_file(photo.file_id)
+            stream = io.BytesIO()
+            await photo_file.download_to_memory(out=stream)
+            stream.seek(0)
+
+            clean_phone = re.sub(r"\D", "", state.phone_e164) or "store"
+            dest_logo = PROJECT_ROOT / "data" / "stores" / "logos" / f"logo_{clean_phone}.png"
+            res = validate_and_process_logo(stream, dest_logo)
+            if not res.is_valid:
+                await msg.reply_text(res.get_message(lang), parse_mode=ParseMode.HTML)
+                return True
+            logo_path = res.saved_path
+
+        # Case 2: User sent Document (image file or non-image document)
+        elif msg.document:
+            doc = msg.document
+            if doc.file_size and doc.file_size > 5 * 1024 * 1024:
+                size_mb = doc.file_size / (1024 * 1024)
+                err_size = {
+                    "ta": f"⚠️ கோப்பின் அளவு மிக அதிகம் ({size_mb:.1f} MB). லோகோ 5 MB-க்குள் இருக்க வேண்டும். தயவுசெய்து சிறிய படத்தை அனுப்பவும்.",
+                    "hi": f"⚠️ फ़ाइल का आकार बहुत बड़ा है ({size_mb:.1f} MB)। लोगो 5 MB से कम होना चाहिए। कृपया छोटी इमेज भेजें।",
+                    "en": f"⚠️ The file is too large ({size_mb:.1f} MB). Logos must be under 5 MB. Please upload a smaller image file.",
+                }
+                await msg.reply_text(err_size.get(lang, err_size["en"]))
+                return True
+
+            doc_file = await context.bot.get_file(doc.file_id)
+            stream = io.BytesIO()
+            await doc_file.download_to_memory(out=stream)
+            stream.seek(0)
+
+            clean_phone = re.sub(r"\D", "", state.phone_e164) or "store"
+            dest_logo = PROJECT_ROOT / "data" / "stores" / "logos" / f"logo_{clean_phone}.png"
+            res = validate_and_process_logo(stream, dest_logo)
+            if not res.is_valid:
+                await msg.reply_text(res.get_message(lang), parse_mode=ParseMode.HTML)
+                return True
+            logo_path = res.saved_path
+
+        # Case 3: User sent Audio / Voice / Video
+        elif msg.voice or msg.audio or msg.video or msg.video_note:
+            media_type = "voice message" if msg.voice else ("audio recording" if msg.audio else "video")
+            err_media = {
+                "ta": (
+                    f"⚠️ <b>தவறான கோப்பு:</b> நீங்கள் {media_type} அனுப்பியுள்ளீர்கள்.\n\n"
+                    "கடை பதிவை முடிக்க லோகோ படம் (<b>PNG, JPG அல்லது WEBP</b>) கட்டாயமாக பதிவேற்றப்பட வேண்டும்.\n\n"
+                    "👉 தயவுசெய்து லோகோ படத்தை அனுப்பவும்."
+                ),
+                "hi": (
+                    f"⚠️ <b>अमान्य फ़ाइल:</b> आपने {media_type} भेजा है।\n\n"
+                    "स्टोर सेटअप पूरा करने के लिए लोगो इमेज (<b>PNG, JPG या WEBP</b>) अपलोड करना अनिवार्य है।\n\n"
+                    "👉 कृपया लोगो की इमेज भेजें।"
+                ),
+                "en": (
+                    f"⚠️ <b>Invalid media:</b> We received a {media_type}.\n\n"
+                    "Uploading a store logo image (<b>PNG, JPG, or WEBP</b>) is mandatory to proceed.\n\n"
+                    "👉 Please upload a photo or image file of your store logo."
+                ),
+            }
+            await msg.reply_text(err_media.get(lang, err_media["en"]), parse_mode=ParseMode.HTML)
+            return True
+
+        # Case 4: User sent Text (e.g. skip attempt or regular text) -> Reject and demand logo
+        elif msg.text:
+            prompt_mandatory = {
+                "ta": (
+                    "⚠️ <b>லோகோ பதிவேற்றம் கட்டாயமானது:</b>\n\n"
+                    "கடையை அமைத்து அடுத்த நிலைக்குச் செல்ல லோகோ பதிவேற்றம் அவசியமாகும் (skip செய்ய முடியாது).\n\n"
+                    "👉 தயவுசெய்து உங்கள் கடையின் லோகோ படத்தை (<b>PNG, JPG அல்லது WEBP</b>) அனுப்பவும்."
+                ),
+                "hi": (
+                    "⚠️ <b>लोगो अपलोड अनिवार्य है:</b>\n\n"
+                    "स्टोर सेटअप पूरा करके आगे बढ़ने के लिए लोगो अपलोड करना अनिवार्य है (skip नहीं किया जा सकता)।\n\n"
+                    "👉 कृपया अपने स्टोर का लोगो इमेज (<b>PNG, JPG या WEBP</b>) भेजें।"
+                ),
+                "en": (
+                    "⚠️ <b>Store Logo is Required to Proceed:</b>\n\n"
+                    "Uploading a store logo is mandatory in order to complete store setup (cannot be skipped).\n\n"
+                    "👉 Please upload a photo or image file (<b>PNG, JPG, or WEBP</b>) of your store logo."
+                ),
+            }
+            await msg.reply_text(prompt_mandatory.get(lang, prompt_mandatory["en"]), parse_mode=ParseMode.HTML)
+            return True
+
+        if not logo_path:
+            return True
+
+        state.logo_path = logo_path
+
 
         # Provision Tenant Store Database
         tenant = registry.register_tenant(
@@ -446,6 +584,8 @@ async def handle_onboarding_step(
             address=state.address,
             gstin=state.gstin,
             tagline=f"Welcome to {state.store_name}!",
+            logo_path=state.logo_path,
+            preferred_language=lang,
         )
 
         # Link chat to newly created tenant
@@ -460,6 +600,9 @@ async def handle_onboarding_step(
         clear_onboarding_session(chat_id)
 
         gstin_line = f"🏷️ <b>GSTIN:</b> {tenant.gstin}\n" if tenant.gstin else ""
+        logo_line = "🖼️ <b>லோகோ:</b> இணைக்கப்பட்டது ✅\n" if state.logo_path else ""
+        logo_line_hi = "🖼️ <b>लोगो:</b> सेट हो गया ✅\n" if state.logo_path else ""
+        logo_line_en = "🖼️ <b>Store Logo:</b> Configured & Ready ✅\n" if state.logo_path else ""
 
         # Celebratory completion message with quickstart commands
         congrats = {
@@ -470,6 +613,7 @@ async def handle_onboarding_step(
                 f"📱 <b>மொபைல்:</b> {tenant.phone_e164}\n"
                 f"📍 <b>முகவரி:</b> {tenant.address}\n"
                 f"{gstin_line}"
+                f"{logo_line}"
                 f"💾 <i>தனிப்பட்ட தரவுத்தளம் (Isolated Database) தயாராக உள்ளது.</i>\n\n"
                 "<b>இப்போது நீங்கள் தொடங்கலாம்:</b>\n"
                 "• <b>பில்லிங்</b>: <i>\"2 கிலோ சர்க்கரை, 1 மேகி, UPI பில் போடு\"</i>\n"
@@ -484,6 +628,7 @@ async def handle_onboarding_step(
                 f"📱 <b>मोबाइल:</b> {tenant.phone_e164}\n"
                 f"📍 <b>पता:</b> {tenant.address}\n"
                 f"{gstin_line}"
+                f"{logo_line_hi}"
                 f"💾 <i>आपका व्यक्तिगत डेटाबेस सुरक्षित रूप से तैयार है।</i>\n\n"
                 "<b>आप तुरंत शुरू कर सकते हैं:</b>\n"
                 "• <b>बिल बनाएं</b>: <i>\"2 किलो चीनी, 1 आशीर्वाद आटा, UPI बिल बनाओ\"</i>\n"
@@ -498,6 +643,7 @@ async def handle_onboarding_step(
                 f"📱 <b>Mobile:</b> {tenant.phone_e164}\n"
                 f"📍 <b>Address:</b> {tenant.address}\n"
                 f"{gstin_line}"
+                f"{logo_line_en}"
                 f"💾 <i>Dedicated store database provisioned & isolated.</i>\n\n"
                 "<b>You can start right away:</b>\n"
                 "• <b>Billing</b>: <i>\"2kg sugar, 1 Aashirvaad atta 5kg, UPI\"</i>\n"
@@ -513,6 +659,7 @@ async def handle_onboarding_step(
         if inv_msg:
             await msg.reply_text(inv_msg, parse_mode=ParseMode.HTML)
         return True
+
 
     return False
 

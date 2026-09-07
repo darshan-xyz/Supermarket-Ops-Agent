@@ -468,6 +468,8 @@ def test_session_reset_preserves_durable_store_data(repo):
 
     # Simulate /new session reset
     from kirana.agent.session import reset_session
+    from kirana.tools.context import init_context
+    init_context(repo)
     chat_id = 99999
     reset_session(chat_id)
 

@@ -43,17 +43,19 @@ Generates a branded, executive Daily Sales & Operations Report PDF with:
 - Top 10 selling products table with revenue & quantity
 - Store health & inventory status (retail value, low stock, out of stock, khata debt)
 
-### Generate invoice PDF ("woh bill PDF de do")
+### Generate invoice PDF ("woh bill PDF de do", "bill 2 of today ka PDF", "September 3 bill 1 PDF")
 
 ```
-generate_invoice_pdf(bill_id)
+generate_invoice_pdf(bill_id?, invoice_no?, bill_no?, date?)
 ```
 
-**How to get `bill_id`:**
-- If the owner just finalised a bill this session, the `bill_id` is in the `finalize_bill` response — use it directly.
-- If the owner refers to an older bill by invoice number (e.g. "INV-00042"), search context or ask the owner to confirm the bill ID first.
+**How to identify the bill:**
+- If the owner just finalised a bill, `bill_id` is in the `cart_finalize` response — use it directly.
+- If referring to a bill by daily sequence and date (e.g. "bill 2 of today", "bill 1 of yesterday", "bill 2 of September 3"): pass `bill_no=2` and `date="today"` or `date="YYYY-MM-DD"`.
+- If referring by unique invoice number (e.g. "INV-20260905-0001"): pass `invoice_no="..."`.
+- If no argument is given, it defaults to the most recently finalized bill in this chat.
 
-The tool renders the PDF and queues it as an output file. Relay the confirmation ("Invoice INV-00042 PDF is ready") and any file-delivery message.
+The tool renders the PDF and queues it as an output file. Relay the confirmation (e.g. "Invoice PDF for Bill #2 of Today is ready") and file delivery message.
 
 ### Generate analysis deck ("is hafte ka deck banao", "daily sales PPT")
 

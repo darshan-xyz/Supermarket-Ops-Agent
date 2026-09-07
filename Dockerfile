@@ -21,7 +21,10 @@ USER app
 
 ENV KIRANA_DB_PATH=/app/data/kirana.db \
     KIRANA_ARTIFACTS_DIR=/app/artifacts_out \
+    PORT=10000 \
     PYTHONUNBUFFERED=1
+
+EXPOSE 10000
 
 # Seed the catalog on first run if the DB is empty, then start the bot.
 CMD ["sh", "-c", "python scripts/seed.py 2>/dev/null; python -m kirana.telegram.bot"]

@@ -114,6 +114,8 @@ class CartView:
     round_off_paise: int = 0
     grand_total_paise: int = 0
     warnings: list[str] = field(default_factory=list)
+    biller_name: str | None = None
+    customer_phone: str | None = None
 
 
 @dataclass
@@ -132,7 +134,30 @@ class Bill:
     total_paise: int
     created_at: str
     finalized_at: str | None
+    daily_seq: int = 0
     was_retry: bool = False  # True when finalize() returned an existing invoice
+    biller_name: str | None = None
+    customer_phone: str | None = None
+
+    @property
+    def date_str(self) -> str:
+        ts = self.finalized_at or self.created_at or ""
+        return ts[:10]
+
+    def reference_display(self, current_date_iso: str | None = None) -> str:
+        seq = self.daily_seq or self.id
+        d = self.date_str
+        if not d:
+            return f"Bill #{seq}"
+        try:
+            from datetime import date
+            dt = date.fromisoformat(d)
+            formatted_date = dt.strftime("%d %b %Y").lstrip("0")
+        except Exception:
+            formatted_date = d
+        if current_date_iso and d == current_date_iso:
+            return f"Bill #{seq} of Today ({formatted_date})"
+        return f"Bill #{seq} of {formatted_date}"
 
 
 @dataclass
@@ -147,6 +172,30 @@ class Customer:
     id: int
     name: str
     phone: str | None
+
+
+@dataclass
+class CustomerPurchaseItem:
+    product_id: int
+    name: str
+    unit: str
+    total_qty_display: str
+    total_spend_paise: int
+    order_count: int
+
+
+@dataclass
+class CustomerHistory:
+    customer: Customer
+    phone: str | None
+    total_visits: int
+    total_spend_paise: int
+    average_bill_paise: int
+    first_visit_date: str | None
+    last_visit_date: str | None
+    khata_balance_paise: int
+    recent_bills: list[dict] = field(default_factory=list)
+    top_products: list[CustomerPurchaseItem] = field(default_factory=list)
 
 
 @dataclass
@@ -227,3 +276,5 @@ class ShopProfile:
     phone: str | None
     state_code: str
     invoice_prefix: str
+    logo_path: str | None = None
+

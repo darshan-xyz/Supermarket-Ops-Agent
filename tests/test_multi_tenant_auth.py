@@ -320,3 +320,107 @@ def test_language_normalization_and_inventory_display(master_reg: MasterRegistry
     assert "சரக்கு இருப்பு" in inv_ta
     assert "Maggi 70g" in inv_ta
 
+
+@pytest.mark.asyncio
+async def test_onboarding_questionnaire_with_logo_step(master_reg: MasterRegistry, tmp_path: Path):
+    """Verify progression through Store Name -> Owner Name -> Address -> GSTIN -> Logo -> Provisioning."""
+    from unittest.mock import AsyncMock, MagicMock
+    from kirana.telegram.onboarding import (
+        start_onboarding,
+        clear_onboarding_session,
+        handle_onboarding_step,
+        OnboardingStep,
+    )
+
+
+    chat_id = 7777
+    user_id = 9999
+    clear_onboarding_session(chat_id)
+    state = start_onboarding(chat_id, user_id, language="en", step=OnboardingStep.AWAITING_STORE_NAME)
+    state.phone_e164 = "+919876543210"
+
+    def _make_update(text=None, photo=None, document=None):
+        msg = MagicMock()
+        msg.text = text
+        msg.photo = photo
+        msg.document = document
+        msg.voice = None
+        msg.audio = None
+        msg.video = None
+        msg.video_note = None
+        msg.contact = None
+        msg.reply_text = AsyncMock()
+        up = MagicMock()
+        up.effective_chat.id = chat_id
+        up.effective_user.id = user_id
+        up.message = msg
+        return up, msg
+
+    # 1. Store Name
+    up, msg = _make_update(text="Kavitha Supermarket")
+    await handle_onboarding_step(up, None, registry=master_reg)
+    assert state.step == OnboardingStep.AWAITING_OWNER_NAME
+    assert state.store_name == "Kavitha Supermarket"
+
+    # 2. Owner Name
+    up, msg = _make_update(text="Kavitha S")
+    await handle_onboarding_step(up, None, registry=master_reg)
+    assert state.step == OnboardingStep.AWAITING_ADDRESS
+    assert state.owner_name == "Kavitha S"
+
+    # 3. Address
+    up, msg = _make_update(text="42 Main Bazaar, Madurai")
+    await handle_onboarding_step(up, None, registry=master_reg)
+    assert state.step == OnboardingStep.AWAITING_GSTIN
+    assert state.address == "42 Main Bazaar, Madurai"
+
+    # 4. GSTIN -> Advances to AWAITING_LOGO
+    up, msg = _make_update(text="33AAAAA0000A1Z5")
+    await handle_onboarding_step(up, None, registry=master_reg)
+    assert state.step == OnboardingStep.AWAITING_LOGO
+    assert state.gstin == "33AAAAA0000A1Z5"
+    assert "Store Logo" in msg.reply_text.call_args[0][0]
+
+    # 5. Non-image text (not skip) -> Prompts format guidance
+    up, msg = _make_update(text="hello")
+    await handle_onboarding_step(up, None, registry=master_reg)
+    assert state.step == OnboardingStep.AWAITING_LOGO
+    assert "mandatory" in msg.reply_text.call_args[0][0]
+
+    # 6. Logo with "skip" -> REJECTED because logo is compulsory
+    up, msg = _make_update(text="skip")
+    await handle_onboarding_step(up, None, registry=master_reg)
+    assert state.step == OnboardingStep.AWAITING_LOGO
+    assert "cannot be skipped" in msg.reply_text.call_args[0][0]
+    assert master_reg.get_tenant_for_chat(chat_id) is None
+
+    # 7. Upload genuine photo -> successfully provisions tenant with logo!
+    mock_file = AsyncMock()
+    from PIL import Image as PILImg
+    import io
+    buf = io.BytesIO()
+    PILImg.new("RGB", (100, 100), color="red").save(buf, format="PNG")
+    test_img_bytes = buf.getvalue()
+
+    async def _mock_download(out):
+        out.write(test_img_bytes)
+
+    mock_file.download_to_memory = _mock_download
+    context = MagicMock()
+    context.bot.get_file = AsyncMock(return_value=mock_file)
+
+    photo_item = MagicMock()
+    photo_item.file_id = "test_photo_123"
+    up, msg = _make_update(photo=[photo_item])
+
+    await handle_onboarding_step(up, context, registry=master_reg)
+    assert master_reg.get_tenant_for_chat(chat_id) is not None
+    tenant = master_reg.get_tenant_for_chat(chat_id)
+    assert tenant.store_name == "Kavitha Supermarket"
+    repo = master_reg.get_store_repo(tenant.store_code)
+    assert repo.get_shop_profile().logo_path is not None
+
+    clear_onboarding_session(chat_id)
+
+
+

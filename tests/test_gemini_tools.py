@@ -26,3 +26,13 @@ def test_gemini_tools_builder():
     assert get_stock_decl.parameters is not None
     assert "product_id" in get_stock_decl.parameters.properties
     assert "product_id" in get_stock_decl.parameters.required
+
+
+def test_system_prompt_domain_boundaries():
+    from kirana.agent.system_prompt import BASE_SYSTEM_PROMPT
+
+    assert "DOMAIN BOUNDARY & STRICT OPERATIONAL FOCUS" in BASE_SYSTEM_PROMPT
+    assert "Strictly Out of Scope" in BASE_SYSTEM_PROMPT
+    assert "write python palindrome program" in BASE_SYSTEM_PROMPT
+    assert "Supermarket & Kirana Store operations" in BASE_SYSTEM_PROMPT
+

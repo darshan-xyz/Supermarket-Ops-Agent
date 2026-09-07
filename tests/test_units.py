@@ -38,3 +38,15 @@ def test_from_base_and_dimension():
     assert dimension("kg") == "mass"
     assert dimension("ml") == "volume"
     assert dimension("dozen") == "count"
+
+
+def test_fractional_packets_and_pieces_rejected():
+    with pytest.raises(UnitError, match="Packets are discrete sealed units"):
+        to_base(1.5, "packet", "packet")
+    with pytest.raises(UnitError, match="Packets are discrete sealed units"):
+        to_base("0.5", None, "packet")
+    with pytest.raises(UnitError, match="Count items must be in whole pieces"):
+        to_base(1.5, "piece", "piece")
+    with pytest.raises(UnitError, match="Count items must be in whole pieces"):
+        to_base(0.7, "dozen", "piece")
+

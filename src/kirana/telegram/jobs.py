@@ -46,7 +46,13 @@ async def _send_weekly_deck(context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     end = today_iso()
     start = (date.fromisoformat(end) - timedelta(days=6)).isoformat()
+    from ..db.master import get_master_registry
+    registry = get_master_registry()
+
     for chat_id in chats:
+        tenant = registry.get_tenant_for_chat(chat_id)
+        if not tenant:
+            continue
         token = current_chat.set(chat_id)
         try:
             repo = get_repo()
@@ -62,10 +68,15 @@ async def _send_weekly_deck(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def _send_khata_reminders(context: ContextTypes.DEFAULT_TYPE) -> None:
+    from ..db.master import get_master_registry
     from ..tools.context import current_chat
+    registry = get_master_registry()
     repo_default = get_repo()
     chats = target_chat_ids(repo_default)
     for chat_id in chats:
+        tenant = registry.get_tenant_for_chat(chat_id)
+        if not tenant:
+            continue
         token = current_chat.set(chat_id)
         try:
             repo = get_repo()
@@ -78,15 +89,55 @@ async def _send_khata_reminders(context: ContextTypes.DEFAULT_TYPE) -> None:
             current_chat.reset(token)
 
 
+async def _nightly_backup(context: ContextTypes.DEFAULT_TYPE) -> None:
+    from ..config import BACKUP_CHAT_ID
+    from ..services.backup import upload_backup_to_telegram
+
+    if not BACKUP_CHAT_ID:
+        return
+    try:
+        await upload_backup_to_telegram(
+            context.bot,
+            BACKUP_CHAT_ID,
+            pin=True,
+            caption_prefix="📦 #kirana_backup [Nightly Schedule]",
+        )
+        log.info("Nightly backup uploaded and pinned to chat %s", BACKUP_CHAT_ID)
+    except Exception as exc:  # noqa: BLE001
+        log.error("Nightly backup failed: %s", exc, exc_info=True)
+
+
 def register_jobs(application: Application) -> None:
+    from ..config import BACKUP_HOUR
+
     jq = application.job_queue
     if jq is None:
-        log.warning("JobQueue unavailable — install python-telegram-bot[job-queue]. "
-                    "Scheduled deck/reminders disabled.")
+        log.warning(
+            "JobQueue unavailable — install python-telegram-bot[job-queue]. "
+            "Scheduled deck/reminders disabled."
+        )
         return
-    jq.run_daily(_send_weekly_deck, time=time(hour=DECK_HOUR, tzinfo=IST),
-                 days=(DECK_WEEKDAY,), name="weekly_deck")
-    jq.run_daily(_send_khata_reminders, time=time(hour=REMINDER_HOUR, tzinfo=IST),
-                 name="khata_reminders")
-    log.info("Scheduled jobs registered: weekly deck (day=%d %02d:00 IST), "
-             "khata reminders (daily %02d:00 IST).", DECK_WEEKDAY, DECK_HOUR, REMINDER_HOUR)
+    jq.run_daily(
+        _send_weekly_deck,
+        time=time(hour=DECK_HOUR, tzinfo=IST),
+        days=(DECK_WEEKDAY,),
+        name="weekly_deck",
+    )
+    jq.run_daily(
+        _send_khata_reminders,
+        time=time(hour=REMINDER_HOUR, tzinfo=IST),
+        name="khata_reminders",
+    )
+    jq.run_daily(
+        _nightly_backup,
+        time=time(hour=BACKUP_HOUR, tzinfo=IST),
+        name="nightly_backup",
+    )
+    log.info(
+        "Scheduled jobs registered: weekly deck (day=%d %02d:00 IST), "
+        "khata reminders (daily %02d:00 IST), nightly backup (%02d:00 IST).",
+        DECK_WEEKDAY,
+        DECK_HOUR,
+        REMINDER_HOUR,
+        BACKUP_HOUR,
+    )

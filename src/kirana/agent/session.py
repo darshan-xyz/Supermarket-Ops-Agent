@@ -19,8 +19,9 @@ from dataclasses import dataclass, field
 from google.genai import Client, types
 
 from ..config import FALLBACK_MODELS, GEMINI_API_KEY, MAX_TURNS
-from ..tools.context import OutFile, current_chat, get_repo, take_output_files
+from ..tools.context import OutFile, current_chat, current_user_message, get_repo, take_output_files
 from ..tools.registry import TOOLS_BY_NAME, build_gemini_tools
+from .guardrails import get_out_of_scope_reply, is_out_of_scope_query
 from .system_prompt import build_system_prompt
 
 log = logging.getLogger("kirana.session")
@@ -134,14 +135,28 @@ async def run_turn(
     """Run an agent turn with Gemini, handling multimodal input (text, voice, photo) and tool calls."""
     # Set chat context for tools FIRST so get_repo() resolves the tenant repo
     token = current_chat.set(chat_id)
+    msg_token = current_user_message.set(text or "")
     try:
         repo = get_repo()
+
+        # Pre-turn Guardrail: Intercept explicit out-of-scope queries (e.g. coding, trivia, prompt injections)
+        if text and not (media_bytes and media_mime):
+            is_out_scope, detected_lang = is_out_of_scope_query(text)
+            if is_out_scope:
+                store_lang = repo.get_preference("language") or detected_lang
+                reply = get_out_of_scope_reply(store_lang)
+                history = _load_chat_history(repo, chat_id)
+                history.append(types.Content(role="user", parts=[types.Part.from_text(text=text)]))
+                history.append(types.Content(role="model", parts=[types.Part.from_text(text=reply)]))
+                _save_chat_history(repo, chat_id, history)
+                return TurnResult(reply=reply, files=[])
+
         client = get_client()
 
         # Load persisted dialogue history
         history = _load_chat_history(repo, chat_id)
         tools = build_gemini_tools()
-        sys_prompt = build_system_prompt(repo)
+        sys_prompt = build_system_prompt(repo, chat_id=chat_id)
 
         config = types.GenerateContentConfig(
             system_instruction=sys_prompt,
@@ -260,6 +275,7 @@ async def run_turn(
         files = take_output_files(chat_id)
         return TurnResult(reply=reply, files=files)
     finally:
+        current_user_message.reset(msg_token)
         current_chat.reset(token)
 
 

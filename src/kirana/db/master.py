@@ -11,15 +11,18 @@ Each tenant has a dedicated SQLite database in `data/stores/store_{store_code}.d
 
 from __future__ import annotations
 
+import gc
 import hashlib
 import logging
 import re
 import secrets
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Any
 
-from ..config import MASTER_DB_PATH, STORES_DIR
+from ..config import ARTIFACTS_DIR, MASTER_DB_PATH, PROJECT_ROOT, STORES_DIR
 from .connection import Database, IST, now_iso
 from .repository import Repository
 
@@ -158,6 +161,8 @@ class MasterRegistry:
         address: str,
         gstin: str | None = None,
         tagline: str | None = None,
+        logo_path: str | None = None,
+        preferred_language: str = "en",
     ) -> Tenant:
         """Create a new tenant record, provision its isolated SQLite database, and seed standard catalog."""
         norm_phone = normalize_phone(phone_e164)
@@ -239,7 +244,13 @@ class MasterRegistry:
             gstin=gstin.strip() if gstin else None,
             phone=norm_phone,
             tagline=tagline.strip() if tagline else f"Welcome to {store_name}!",
+            logo_path=logo_path.strip() if logo_path else None,
         )
+
+        # Initialize default store preferences
+        tenant_repo.set_preference("last_biller", owner_name.strip())
+        if preferred_language:
+            tenant_repo.set_preference("language", preferred_language.strip())
 
         tenant = self.get_tenant_by_id(tenant_id)
         assert tenant is not None
@@ -293,6 +304,18 @@ class MasterRegistry:
             )
         user = self.get_user_for_chat(chat_id)
         assert user is not None
+
+        tenant = self.get_tenant_by_id(tenant_id)
+        if tenant:
+            try:
+                store_repo = self.get_store_repo(tenant.store_code)
+                if language:
+                    store_repo.set_preference("language", language)
+                if tenant.owner_name and not store_repo.get_preference("last_biller"):
+                    store_repo.set_preference("last_biller", tenant.owner_name.strip())
+            except Exception as e:
+                log.warning("Could not sync preferences to store repo: %s", e)
+
         return user
 
     def get_user_for_chat(self, chat_id: int) -> TenantUser | None:
@@ -340,6 +363,159 @@ class MasterRegistry:
         if not tenant:
             return None
         return self.get_store_repo(tenant.store_code)
+
+    def delete_tenant(
+        self,
+        store_code: str | None = None,
+        chat_id: int | None = None,
+        phone_e164: str | None = None,
+    ) -> dict[str, Any]:
+        """Permanently delete a tenant store, all isolated databases, logos, and invoices.
+
+        Completely purges:
+          - Isolated store database (store_{code}.db, .db-wal, .db-shm)
+          - Logo files in data/stores/logos/
+          - Invoices in artifacts_out/
+          - Tenant user links, OTP records, and tenant registration in master.db
+          - Cached Repository in _repo_pool
+
+        Guarantees that the phone number and chat ID can re-register with zero
+        contradictions or duplicate key conflicts.
+        """
+        tenant: Tenant | None = None
+        if store_code:
+            tenant = self.get_tenant_by_code(store_code)
+        elif chat_id is not None:
+            tenant = self.get_tenant_for_chat(chat_id)
+        elif phone_e164:
+            tenant = self.get_tenant_by_phone(phone_e164)
+
+        if not tenant:
+            return {"success": False, "error": "Store not found"}
+
+        t_id = tenant.id
+        s_code = tenant.store_code
+        s_name = tenant.store_name
+        s_phone = tenant.phone_e164
+        clean_phone = re.sub(r"\D", "", s_phone)
+        db_filename = tenant.db_filename
+
+        deleted_files: list[str] = []
+
+        # 1. Discover artifacts (logo paths, invoice PDFs) from tenant DB before closing
+        logo_paths_to_check: set[Path] = {
+            PROJECT_ROOT / "data" / "stores" / "logos" / f"logo_{clean_phone}.png",
+            PROJECT_ROOT / "data" / "stores" / "logos" / f"store_{s_code}_logo.png",
+        }
+        invoice_paths_to_check: set[Path] = set()
+
+        temp_db_to_close: Database | None = None
+        try:
+            repo = self._repo_pool.get(s_code)
+            if not repo:
+                db_path = STORES_DIR / db_filename
+                if db_path.exists():
+                    temp_db_to_close = Database(db_path)
+                    repo = Repository(temp_db_to_close)
+            if repo:
+                try:
+                    profile = repo.get_shop_profile()
+                    if profile.logo_path:
+                        logo_paths_to_check.add(Path(profile.logo_path))
+                except Exception:
+                    pass
+                try:
+                    bills = repo.db.query_all("SELECT id, invoice_no FROM bills")
+                    for b in bills:
+                        inv_no = b["invoice_no"]
+                        bid = b["id"]
+                        if inv_no:
+                            invoice_paths_to_check.add(ARTIFACTS_DIR / f"invoice_{inv_no}.pdf")
+                        invoice_paths_to_check.add(ARTIFACTS_DIR / f"invoice_{bid}.pdf")
+                except Exception:
+                    pass
+        except Exception as e:
+            log.warning("Could not inspect tenant repo before deletion for %s: %s", s_code, e)
+
+        # 2. Close and evict cached Repository connection and any temp connection
+        if temp_db_to_close is not None:
+            try:
+                temp_db_to_close.close()
+            except Exception as e:
+                log.warning("Error closing temporary db for %s: %s", s_code, e)
+
+        cached_repo = self._repo_pool.pop(s_code, None)
+        if cached_repo is not None:
+            try:
+                cached_repo.db.close()
+            except Exception as e:
+                log.warning("Error closing cached repo db for %s: %s", s_code, e)
+
+        gc.collect()
+
+        # 3. Unlink isolated tenant DB files (with retry loop for Windows file lock release)
+        store_db_path = STORES_DIR / db_filename
+        wal_path = STORES_DIR / f"{db_filename}-wal"
+        shm_path = STORES_DIR / f"{db_filename}-shm"
+
+        for p in (wal_path, shm_path, store_db_path):
+            if p.exists():
+                for _attempt in range(5):
+                    try:
+                        p.unlink(missing_ok=True)
+                        deleted_files.append(str(p))
+                        break
+                    except PermissionError:
+                        time.sleep(0.05)
+                        gc.collect()
+                if p.exists():
+                    log.warning("Could not delete locked file %s after retries", p)
+
+        # 4. Unlink logo files
+        for lp in logo_paths_to_check:
+            try:
+                if lp.exists() and lp.is_file():
+                    lp.unlink(missing_ok=True)
+                    deleted_files.append(str(lp))
+            except Exception as e:
+                log.warning("Could not delete logo file %s: %s", lp, e)
+
+        # 5. Unlink invoice PDFs
+        for ip in invoice_paths_to_check:
+            try:
+                if ip.exists() and ip.is_file():
+                    ip.unlink(missing_ok=True)
+                    deleted_files.append(str(ip))
+            except Exception as e:
+                log.warning("Could not delete invoice file %s: %s", ip, e)
+
+        # 6. Atomic Master Control Plane Purge
+        with self.db.transaction() as conn:
+            user_chats = [
+                r["telegram_chat_id"]
+                for r in self.db.query_all(
+                    "SELECT telegram_chat_id FROM tenant_users WHERE tenant_id=?", (t_id,)
+                )
+            ]
+            conn.execute("DELETE FROM auth_otps WHERE phone_e164=?", (s_phone,))
+            for cid in user_chats:
+                conn.execute("DELETE FROM auth_otps WHERE telegram_chat_id=?", (cid,))
+                conn.execute("DELETE FROM auth_audit WHERE telegram_chat_id=?", (cid,))
+
+            conn.execute("DELETE FROM auth_audit WHERE phone_e164=?", (s_phone,))
+            conn.execute("DELETE FROM tenant_users WHERE tenant_id=?", (t_id,))
+            conn.execute("DELETE FROM tenants WHERE id=?", (t_id,))
+
+        log.info("Permanently deleted tenant store_code=%s id=%d name=%s", s_code, t_id, s_name)
+        return {
+            "success": True,
+            "store_code": s_code,
+            "store_name": s_name,
+            "phone_e164": s_phone,
+            "deleted_files": deleted_files,
+            "unlinked_chats": user_chats,
+        }
+
 
     # --- In-Chat Telegram OTP Handling ---
 

@@ -58,6 +58,20 @@ OWNER_CHAT_ID: int | None = (
 DECK_WEEKDAY: int = int(os.environ.get("KIRANA_DECK_WEEKDAY", "1"))   # 0=Sun … 1=Mon
 DECK_HOUR: int = int(os.environ.get("KIRANA_DECK_HOUR", "9"))         # weekly deck at 09:00 IST
 REMINDER_HOUR: int = int(os.environ.get("KIRANA_REMINDER_HOUR", "10"))  # daily khata reminder
+BACKUP_HOUR: int = int(os.environ.get("KIRANA_BACKUP_HOUR", "23"))      # nightly backup at 23:00 IST
+
+# --- Cloud Hosting & State Resilience ---
+PORT: int = int(os.environ.get("PORT", "10000"))
+BACKUP_CHAT_ID: int | None = (
+    int(os.environ["TELEGRAM_BACKUP_CHAT_ID"])
+    if os.environ.get("TELEGRAM_BACKUP_CHAT_ID")
+    else OWNER_CHAT_ID
+)
+AUTO_RESTORE_ON_BOOT: bool = os.environ.get("BACKUP_AUTO_RESTORE_ON_BOOT", "1").lower() in (
+    "1",
+    "true",
+    "yes",
+)
 
 
 def ensure_dirs() -> None:

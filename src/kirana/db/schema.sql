@@ -73,6 +73,8 @@ CREATE TABLE IF NOT EXISTS bills (
   status           TEXT NOT NULL DEFAULT 'draft',   -- draft | finalized | void
   invoice_no       TEXT UNIQUE,
   customer_id      INTEGER REFERENCES customers(id),
+  customer_phone   TEXT,
+  billed_by        TEXT,
   payment_mode     TEXT,                            -- cash | upi | card | khata
   payment_ref      TEXT,
   subtotal_paise   INTEGER NOT NULL DEFAULT 0,
@@ -81,11 +83,13 @@ CREATE TABLE IF NOT EXISTS bills (
   round_off_paise  INTEGER NOT NULL DEFAULT 0,
   total_paise      INTEGER NOT NULL DEFAULT 0,
   idempotency_key  TEXT UNIQUE,
+  daily_seq        INTEGER DEFAULT 0,
   created_at       TEXT NOT NULL,
   finalized_at     TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_bills_chat_status ON bills(chat_id, status);
 CREATE INDEX IF NOT EXISTS idx_bills_finalized ON bills(finalized_at);
+CREATE INDEX IF NOT EXISTS idx_bills_customer ON bills(customer_id);
 
 CREATE TABLE IF NOT EXISTS bill_items (
   id                INTEGER PRIMARY KEY,
@@ -131,8 +135,10 @@ CREATE TABLE IF NOT EXISTS shop_profile (
   phone          TEXT,
   state_code     TEXT NOT NULL DEFAULT '29',
   invoice_prefix TEXT NOT NULL DEFAULT 'INV',
+  logo_path      TEXT,
   updated_at     TEXT
 );
+
 
 -- ---------- Transport idempotency / sessions ----------
 CREATE TABLE IF NOT EXISTS processed_updates (

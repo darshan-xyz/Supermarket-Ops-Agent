@@ -11,10 +11,21 @@ Guardrails enforced here:
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from datetime import date, timedelta
 from decimal import Decimal
 
+from ..agent.guardrails import (
+    sanitize_customer_name,
+    sanitize_employee_name,
+    validate_date_range,
+    validate_fssai_inward_expiry,
+    validate_legal_metrology,
+    validate_phone_number,
+    validate_price_bounds,
+    validate_quantity_bounds,
+)
 from ..domain import gst, money
 from ..domain.models import (
     Batch,
@@ -23,6 +34,8 @@ from ..domain.models import (
     CartLine,
     CartView,
     Customer,
+    CustomerHistory,
+    CustomerPurchaseItem,
     ExpiringBatch,
     DailyReport,
     GstReport,
@@ -105,6 +118,42 @@ class Repository:
                     "created_at) VALUES (?,?,NULL,?, 'opening balance', ?)",
                     (p["id"], p["stock_base"], p["cost_paise"], now_iso()),
                 )
+
+            # Ensure daily_seq exists on bills for legacy databases
+            cols = [col["name"] for col in c.execute("PRAGMA table_info(bills)").fetchall()]
+            if "daily_seq" not in cols:
+                c.execute("ALTER TABLE bills ADD COLUMN daily_seq INTEGER DEFAULT 0")
+                dates = [row["d"] for row in c.execute(
+                    "SELECT DISTINCT substr(finalized_at, 1, 10) AS d FROM bills "
+                    "WHERE status='finalized' AND finalized_at IS NOT NULL"
+                ).fetchall()]
+                for d in dates:
+                    b_rows = c.execute(
+                        "SELECT id FROM bills WHERE status='finalized' "
+                        "AND substr(finalized_at, 1, 10) = ? ORDER BY finalized_at, id",
+                        (d,)
+                    ).fetchall()
+                    for idx, br in enumerate(b_rows, 1):
+                        c.execute("UPDATE bills SET daily_seq=? WHERE id=?", (idx, br["id"]))
+            c.execute("CREATE INDEX IF NOT EXISTS idx_bills_date_seq ON bills(substr(finalized_at, 1, 10), daily_seq)")
+
+            # Ensure billed_by and customer_phone exist on bills for legacy databases
+            if "billed_by" not in cols:
+                c.execute("ALTER TABLE bills ADD COLUMN billed_by TEXT")
+            if "customer_phone" not in cols:
+                c.execute("ALTER TABLE bills ADD COLUMN customer_phone TEXT")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_bills_customer ON bills(customer_id)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_bills_phone ON bills(customer_phone)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_bills_billed_by ON bills(billed_by)")
+            cust_cols = [col["name"] for col in c.execute("PRAGMA table_info(customers)").fetchall()]
+            if "phone" not in cust_cols:
+                c.execute("ALTER TABLE customers ADD COLUMN phone TEXT")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_customers_phone ON customers(phone)")
+
+            # Ensure logo_path exists on shop_profile for legacy databases
+            prof_cols = [col["name"] for col in c.execute("PRAGMA table_info(shop_profile)").fetchall()]
+            if "logo_path" not in prof_cols:
+                c.execute("ALTER TABLE shop_profile ADD COLUMN logo_path TEXT")
 
     # ------------------------------------------------------------------ #
     # Row -> dataclass mappers
@@ -193,11 +242,32 @@ class Repository:
         unit = normalize_unit(unit)
         if gst_rate not in gst.VALID_SLABS:
             raise ValidationError(f"GST slab must be one of {gst.VALID_SLABS}.")
-        if sell_paise <= 0 or mrp_paise <= 0:
-            raise ValidationError("MRP and sell price must be positive.")
+        try:
+            validate_price_bounds(sell_paise, "Selling price")
+            validate_price_bounds(mrp_paise, "MRP")
+            validate_legal_metrology(sell_paise, mrp_paise)
+            if opening_stock_base < 0:
+                raise ValidationError("Opening stock cannot be negative.")
+            if opening_stock_base > 0:
+                validate_quantity_bounds(opening_stock_base, unit)
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
         expiry = self._parse_expiry(expiry)
         ts = now_iso()
+        clean_name = re.sub(r"\s+", " ", name.strip())
         with self.db.transaction() as c:
+            existing = c.execute(
+                "SELECT id, name, unit, stock_base, sell_paise FROM products WHERE lower(trim(name)) = ? AND active = 1",
+                (clean_name.lower(),),
+            ).fetchone()
+            if existing:
+                stock_disp = format_qty(existing["stock_base"], existing["unit"])
+                sell_disp = money.format_inr(existing["sell_paise"])
+                raise ValidationError(
+                    f"Product '{clean_name}' already exists in your store catalogue "
+                    f"(ID #{existing['id']}, Stock: {stock_disp}, Selling Price: {sell_disp}). "
+                    f"To add incoming inventory, use receive_stock. To update prices or details, use update_product."
+                )
             cur = c.execute(
                 """INSERT INTO products
                    (name, brand, aliases, sku_code, hsn_code, unit, is_loose,
@@ -224,13 +294,28 @@ class Repository:
         mrp_paise: int | None = None, sell_paise: int | None = None,
         note: str | None = None, expiry: str | None = None,
     ) -> Product:
-        if qty_base <= 0:
-            raise ValidationError("Received quantity must be positive.")
+        try:
+            validate_quantity_bounds(qty_base, "units")
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
         expiry = self._parse_expiry(expiry)
+        if expiry:
+            try:
+                validate_fssai_inward_expiry(expiry, today_iso())
+            except ValueError as exc:
+                raise ValidationError(str(exc)) from exc
         with self.db.transaction() as c:
             row = c.execute("SELECT * FROM products WHERE id=?", (product_id,)).fetchone()
             if row is None:
                 raise ProductNotFound(f"No product with id {product_id}.")
+            eff_sell = sell_paise if sell_paise is not None else row["sell_paise"]
+            eff_mrp = mrp_paise if mrp_paise is not None else row["mrp_paise"]
+            try:
+                validate_price_bounds(eff_sell, "Selling price")
+                validate_price_bounds(eff_mrp, "MRP")
+                validate_legal_metrology(eff_sell, eff_mrp)
+            except ValueError as exc:
+                raise ValidationError(str(exc)) from exc
             sets = ["stock_base = stock_base + ?", "updated_at = ?"]
             params: list = [qty_base, now_iso()]
             if cost_paise is not None:
@@ -250,6 +335,130 @@ class Repository:
             )
             self._add_batch(c, product_id, qty_base, batch_cost, expiry, note)
         return self.get_product(product_id)  # type: ignore[return-value]
+
+    def update_product(
+        self,
+        product_id: int,
+        *,
+        name: str | None = None,
+        sell_paise: int | None = None,
+        mrp_paise: int | None = None,
+        cost_paise: int | None = None,
+        reorder_base: int | None = None,
+        brand: str | None = None,
+        aliases: str | None = None,
+        hsn_code: str | None = None,
+        gst_rate: int | None = None,
+        active: bool | None = None,
+    ) -> Product:
+        with self.db.transaction() as c:
+            row = c.execute("SELECT * FROM products WHERE id=?", (product_id,)).fetchone()
+            if row is None:
+                raise ProductNotFound(f"No product with id {product_id}.")
+
+            eff_sell = sell_paise if sell_paise is not None else row["sell_paise"]
+            eff_mrp = mrp_paise if mrp_paise is not None else row["mrp_paise"]
+            try:
+                validate_price_bounds(eff_sell, "Selling price")
+                validate_price_bounds(eff_mrp, "MRP")
+                validate_legal_metrology(eff_sell, eff_mrp)
+                if cost_paise is not None:
+                    validate_price_bounds(cost_paise, "Cost price")
+                if reorder_base is not None and reorder_base < 0:
+                    raise ValidationError("Reorder level cannot be negative.")
+                if gst_rate is not None and gst_rate not in gst.VALID_SLABS:
+                    raise ValidationError(f"GST slab must be one of {gst.VALID_SLABS}.")
+            except ValueError as exc:
+                raise ValidationError(str(exc)) from exc
+
+            sets: list[str] = ["updated_at = ?"]
+            params: list = [now_iso()]
+            if name is not None:
+                sets.append("name = ?"); params.append(name.strip())
+            if sell_paise is not None:
+                sets.append("sell_paise = ?"); params.append(sell_paise)
+            if mrp_paise is not None:
+                sets.append("mrp_paise = ?"); params.append(mrp_paise)
+            if cost_paise is not None:
+                sets.append("cost_paise = ?"); params.append(cost_paise)
+            if reorder_base is not None:
+                sets.append("reorder_base = ?"); params.append(reorder_base)
+            if brand is not None:
+                sets.append("brand = ?"); params.append(brand.strip())
+            if aliases is not None:
+                sets.append("aliases = ?"); params.append(aliases.strip().lower())
+            if hsn_code is not None:
+                sets.append("hsn_code = ?"); params.append(hsn_code.strip())
+            if gst_rate is not None:
+                sets.append("gst_rate = ?"); params.append(gst_rate)
+            if active is not None:
+                sets.append("active = ?"); params.append(int(active))
+
+            params.append(product_id)
+            c.execute(f"UPDATE products SET {', '.join(sets)} WHERE id=?", params)
+
+        prod = self.get_product(product_id)
+        if prod is None:
+            raise ProductNotFound(f"No product with id {product_id}.")
+        return prod
+
+    def adjust_stock(
+        self,
+        product_id: int,
+        delta_base: int,
+        *,
+        reason: str = "audit_correction",
+        note: str | None = None,
+    ) -> Product:
+        """Adjust product stock by delta_base (positive to increase, negative to decrease).
+
+        Ensures stock does not drop below zero, keeps batch quantities aligned with
+        FEFO consumption on reduction, and records the movement with reason in stock_movements.
+        """
+        if delta_base == 0:
+            prod = self.get_product(product_id)
+            if prod is None:
+                raise ProductNotFound(f"No product with id {product_id}.")
+            return prod
+
+        with self.db.transaction() as c:
+            row = c.execute("SELECT * FROM products WHERE id=?", (product_id,)).fetchone()
+            if row is None:
+                raise ProductNotFound(f"No product with id {product_id}.")
+
+            current_stock = row["stock_base"]
+            new_stock = current_stock + delta_base
+            if new_stock < 0:
+                prod_unit = row["unit"]
+                cur_display = format_qty(current_stock, prod_unit)
+                needed_display = format_qty(abs(delta_base), prod_unit)
+                raise InsufficientStock(
+                    f"Cannot reduce stock of '{row['name']}' by {needed_display}: current stock is only {cur_display}."
+                )
+
+            c.execute(
+                "UPDATE products SET stock_base = stock_base + ?, updated_at = ? WHERE id = ?",
+                (delta_base, now_iso(), product_id),
+            )
+
+            # Keep batches aligned with product stock
+            if delta_base < 0:
+                self._consume_batches_fefo(c, product_id, abs(delta_base))
+            else:
+                self._add_batch(c, product_id, delta_base, row["cost_paise"], None, note)
+
+            movement_note = f"Stock adjustment ({reason}): {note}" if note else f"Stock adjustment ({reason})"
+            c.execute(
+                """INSERT INTO stock_movements
+                   (product_id, delta_base, reason, cost_paise, note, created_at)
+                   VALUES (?,?,'adjustment',?,?,?)""",
+                (product_id, delta_base, row["cost_paise"], movement_note, now_iso()),
+            )
+
+        prod = self.get_product(product_id)
+        if prod is None:
+            raise ProductNotFound(f"No product with id {product_id}.")
+        return prod
 
     def get_product(self, product_id: int) -> Product | None:
         r = self.db.query_one("SELECT * FROM products WHERE id=?", (product_id,))
@@ -275,6 +484,11 @@ class Repository:
                    name LIMIT ?""",
             (q, q, q, q, clean, comma_exact, prefix, comma_prefix, limit),
         )
+        return [self._product(r) for r in rows]
+
+    def list_inventory(self, active_only: bool = True) -> list[Product]:
+        where = "WHERE active=1" if active_only else ""
+        rows = self.db.query_all(f"SELECT * FROM products {where} ORDER BY name ASC")
         return [self._product(r) for r in rows]
 
     def get_stock(self, product_id: int) -> StockInfo:
@@ -341,10 +555,11 @@ class Repository:
             "SELECT * FROM bills WHERE chat_id=? AND status='draft' "
             "ORDER BY id DESC LIMIT 1", (chat_id,))
         if r is None:
+            default_biller = self.get_preference("active_cashier") or self.get_preference("last_biller")
             with self.db.transaction() as c:
                 cur = c.execute(
-                    "INSERT INTO bills (chat_id, status, created_at) VALUES (?, 'draft', ?)",
-                    (chat_id, now_iso()))
+                    "INSERT INTO bills (chat_id, status, billed_by, created_at) VALUES (?, 'draft', ?, ?)",
+                    (chat_id, default_biller, now_iso()))
                 bid = cur.lastrowid
             r = self.db.query_one("SELECT * FROM bills WHERE id=?", (bid,))
         return self._bill_from_row(r)
@@ -376,6 +591,13 @@ class Repository:
         if p is None:
             raise ProductNotFound(f"No product with id {product_id}.")
         add_base = to_base(qty_display, unit, p.unit)
+        if mode == "add" and add_base <= 0:
+            raise ValidationError("Quantity to add must be strictly positive.")
+        try:
+            if add_base > 0:
+                validate_quantity_bounds(add_base, p.unit)
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
         with self.db.transaction() as c:
             existing = c.execute(
                 "SELECT qty_base FROM bill_items WHERE bill_id=? AND product_id=?",
@@ -389,6 +611,11 @@ class Repository:
                           (bill.id, product_id))
             else:
                 lt = gst.line_total_paise(p.sell_paise, new_base)
+                if lt < 100:
+                    raise ValidationError(
+                        f"Line item amount for '{p.name}' is too small ({money.format_inr(lt)}). "
+                        "Minimum billable amount per line item is ₹1.00."
+                    )
                 tax = gst.compute_line_tax(lt, p.gst_rate)
                 c.execute(
                     """INSERT INTO bill_items
@@ -420,11 +647,20 @@ class Repository:
                       (mode, ref, bill.id))
         return self.cart_view(chat_id)
 
-    def cart_set_customer(self, chat_id: int, customer_name: str) -> CartView:
-        cust = self.find_or_create_customer(customer_name)
+    def cart_set_biller(self, chat_id: int, employee_name: str) -> CartView:
+        employee_name = sanitize_employee_name(employee_name)
         bill = self.cart_get_or_create(chat_id)
         with self.db.transaction() as c:
-            c.execute("UPDATE bills SET customer_id=? WHERE id=?", (cust.id, bill.id))
+            c.execute("UPDATE bills SET billed_by=? WHERE id=?", (employee_name, bill.id))
+        self.set_preference("active_cashier", employee_name)
+        return self.cart_view(chat_id)
+
+    def cart_set_customer(self, chat_id: int, customer_name: str, phone: str | None = None) -> CartView:
+        cust = self.find_or_create_customer(customer_name, phone=phone)
+        bill = self.cart_get_or_create(chat_id)
+        with self.db.transaction() as c:
+            c.execute("UPDATE bills SET customer_id=?, customer_phone=? WHERE id=?",
+                      (cust.id, cust.phone, bill.id))
         return self.cart_view(chat_id)
 
     def cart_clear(self, chat_id: int) -> None:
@@ -463,6 +699,7 @@ class Repository:
             taxes.append(gst.LineTax(ir["gst_rate"], ir["line_total_paise"],
                                      ir["taxable_paise"], ir["cgst_paise"], ir["sgst_paise"]))
         totals = gst.summarize(taxes)
+        active_biller = bill.biller_name or self.get_preference("active_cashier") or self.get_preference("last_biller")
         return CartView(
             bill_id=bill.id, chat_id=chat_id, status=bill.status,
             customer_name=bill.customer_name, payment_mode=bill.payment_mode,
@@ -470,6 +707,7 @@ class Repository:
             subtotal_paise=totals.subtotal_paise, cgst_paise=totals.cgst_paise,
             sgst_paise=totals.sgst_paise, round_off_paise=totals.round_off_paise,
             grand_total_paise=totals.grand_total_paise, warnings=warnings,
+            biller_name=active_biller, customer_phone=bill.customer_phone,
         )
 
     def finalize_bill(self, chat_id: int, idempotency_key: str,
@@ -541,15 +779,24 @@ class Repository:
                                          it["sgst_paise"]))
 
             totals = gst.summarize(taxes)
-            invoice_no = self._next_invoice_no(c)
             ts = now_iso()
+            date_str = ts[:10]
+            daily_seq, invoice_no = self._next_invoice_no(c, date_str)
+
+            biller = row["billed_by"] if ("billed_by" in row.keys() and row["billed_by"]) else (self.get_preference("active_cashier") or self.get_preference("last_biller"))
+            phone = row["customer_phone"] if ("customer_phone" in row.keys() and row["customer_phone"]) else None
+            if not phone and row["customer_id"]:
+                cr = c.execute("SELECT phone FROM customers WHERE id=?", (row["customer_id"],)).fetchone()
+                if cr and cr["phone"]:
+                    phone = cr["phone"]
+
             c.execute(
-                """UPDATE bills SET status='finalized', invoice_no=?, subtotal_paise=?,
+                """UPDATE bills SET status='finalized', invoice_no=?, daily_seq=?, subtotal_paise=?,
                    cgst_paise=?, sgst_paise=?, round_off_paise=?, total_paise=?,
-                   idempotency_key=?, finalized_at=? WHERE id=?""",
-                (invoice_no, totals.subtotal_paise, totals.cgst_paise, totals.sgst_paise,
+                   idempotency_key=?, finalized_at=?, billed_by=?, customer_phone=? WHERE id=?""",
+                (invoice_no, daily_seq, totals.subtotal_paise, totals.cgst_paise, totals.sgst_paise,
                  totals.round_off_paise, totals.grand_total_paise, idempotency_key,
-                 ts, bill_id))
+                 ts, biller, phone, bill_id))
 
             if mode == "khata":
                 c.execute(
@@ -561,24 +808,37 @@ class Repository:
 
         return self.get_bill(bill_id).bill
 
-    def _next_invoice_no(self, c: sqlite3.Connection) -> str:
+    def _next_invoice_no(self, c: sqlite3.Connection, date_str: str) -> tuple[int, str]:
         prof = c.execute("SELECT invoice_prefix FROM shop_profile WHERE id=1").fetchone()
         prefix = (prof["invoice_prefix"] if prof else "INV") or "INV"
-        n = c.execute("SELECT COUNT(*) AS n FROM bills WHERE status='finalized'").fetchone()["n"]
-        return f"{prefix}-{n + 1:05d}"
+        n = c.execute(
+            "SELECT COUNT(*) AS n FROM bills WHERE status='finalized' AND substr(finalized_at, 1, 10) = ?",
+            (date_str,)
+        ).fetchone()["n"]
+        daily_seq = n + 1
+        date_slug = date_str.replace("-", "")
+        invoice_no = f"{prefix}-{date_slug}-{daily_seq:04d}"
+        return daily_seq, invoice_no
 
     def _bill_from_row(self, r: sqlite3.Row) -> Bill:
         cust_name = None
+        phone = r["customer_phone"] if ("customer_phone" in r.keys() and r["customer_phone"]) else None
         if r["customer_id"]:
-            cr = self.db.query_one("SELECT name FROM customers WHERE id=?", (r["customer_id"],))
-            cust_name = cr["name"] if cr else None
+            cr = self.db.query_one("SELECT name, phone FROM customers WHERE id=?", (r["customer_id"],))
+            if cr:
+                cust_name = cr["name"]
+                if not phone:
+                    phone = cr["phone"]
+        daily_seq = r["daily_seq"] if ("daily_seq" in r.keys() and r["daily_seq"]) else (r["id"] or 1)
+        billed_by = r["billed_by"] if ("billed_by" in r.keys() and r["billed_by"]) else None
         return Bill(
             id=r["id"], invoice_no=r["invoice_no"], status=r["status"], chat_id=r["chat_id"],
             customer_name=cust_name, payment_mode=r["payment_mode"], payment_ref=r["payment_ref"],
             subtotal_paise=r["subtotal_paise"], cgst_paise=r["cgst_paise"],
             sgst_paise=r["sgst_paise"], round_off_paise=r["round_off_paise"],
             total_paise=r["total_paise"], created_at=r["created_at"],
-            finalized_at=r["finalized_at"],
+            finalized_at=r["finalized_at"], daily_seq=daily_seq,
+            biller_name=billed_by, customer_phone=phone,
         )
 
     def get_bill(self, bill_id: int) -> BillDetail:
@@ -609,6 +869,32 @@ class Repository:
         r = self.db.query_one("SELECT id FROM bills WHERE invoice_no = ? COLLATE NOCASE",
                               (invoice_no.strip(),))
         return self.get_bill(r["id"]) if r else None
+
+    def get_bill_by_date_and_seq(self, date_str: str, seq: int) -> BillDetail | None:
+        """Find bill for a specific date (YYYY-MM-DD) with daily_seq = seq."""
+        r = self.db.query_one(
+            "SELECT id FROM bills WHERE status='finalized' AND substr(finalized_at, 1, 10) = ? "
+            "AND (daily_seq = ? OR (daily_seq = 0 AND id = ?)) ORDER BY id LIMIT 1",
+            (date_str.strip(), seq, seq),
+        )
+        return self.get_bill(r["id"]) if r else None
+
+    def find_bills_by_seq(self, seq: int) -> list[BillDetail]:
+        """Find all finalized bills across any date with daily_seq = seq."""
+        rows = self.db.query_all(
+            "SELECT id FROM bills WHERE status='finalized' "
+            "AND (daily_seq = ? OR (daily_seq = 0 AND id = ?)) ORDER BY id DESC",
+            (seq, seq),
+        )
+        return [self.get_bill(r["id"]) for r in rows]
+
+    def upcoming_daily_seq(self) -> int:
+        today = today_iso()
+        n = self.db.query_one(
+            "SELECT COUNT(*) AS n FROM bills WHERE status='finalized' AND substr(finalized_at, 1, 10) = ?",
+            (today,),
+        )["n"]
+        return n + 1
 
     def latest_finalized_bill_id(self, chat_id: int | None = None) -> int | None:
         if chat_id is None:
@@ -651,21 +937,58 @@ class Repository:
     # KHATA
     # ================================================================== #
     def find_or_create_customer(self, name: str, phone: str | None = None) -> Customer:
-        name = name.strip()
-        if not name:
-            raise ValidationError("Customer name is required.")
+        try:
+            name = sanitize_customer_name(name)
+            phone = validate_phone_number(phone)
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
+
+        # 1. If phone is provided, phone is the unique primary anchor
+        if phone:
+            r = self.db.query_one("SELECT * FROM customers WHERE phone = ?", (phone,))
+            if r:
+                if r["name"].lower() != name.lower():
+                    with self.db.transaction() as c:
+                        try:
+                            c.execute("UPDATE customers SET name=? WHERE id=?", (name, r["id"]))
+                        except sqlite3.IntegrityError:
+                            pass
+                return self._customer(self.db.query_one("SELECT * FROM customers WHERE id=?", (r["id"],)))
+
+            # If not found by phone, check if a customer with this name exists without a phone
+            r_name = self.db.query_one("SELECT * FROM customers WHERE name = ? COLLATE NOCASE", (name,))
+            if r_name:
+                if not r_name["phone"]:
+                    with self.db.transaction() as c:
+                        c.execute("UPDATE customers SET phone=? WHERE id=?", (phone, r_name["id"]))
+                    return self._customer(self.db.query_one("SELECT * FROM customers WHERE id=?", (r_name["id"],)))
+                else:
+                    # Disambiguate name so insert doesn't fail unique(name) constraint
+                    name = f"{name} ({phone[-4:]})"
+
+            with self.db.transaction() as c:
+                cur = c.execute("INSERT INTO customers (name, phone, created_at) VALUES (?,?,?)",
+                                (name, phone, now_iso()))
+                cid = cur.lastrowid
+            return self._customer(self.db.query_one("SELECT * FROM customers WHERE id=?", (cid,)))
+
+        # 2. No phone provided (walk-in or legacy)
         r = self.db.query_one("SELECT * FROM customers WHERE name = ? COLLATE NOCASE", (name,))
         if r:
             return self._customer(r)
         with self.db.transaction() as c:
             cur = c.execute("INSERT INTO customers (name, phone, created_at) VALUES (?,?,?)",
-                            (name, phone, now_iso()))
+                            (name, None, now_iso()))
             cid = cur.lastrowid
         return self._customer(self.db.query_one("SELECT * FROM customers WHERE id=?", (cid,)))
 
     def _find_customer(self, name: str) -> Customer:
+        try:
+            name = sanitize_customer_name(name)
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
         r = self.db.query_one("SELECT * FROM customers WHERE name = ? COLLATE NOCASE",
-                              (name.strip(),))
+                              (name,))
         if r is None:
             raise CustomerNotFound(f"No khata customer named '{name}'.")
         return self._customer(r)
@@ -740,6 +1063,112 @@ class Repository:
         out.sort(key=lambda s: s.balance_paise, reverse=True)
         return out
 
+    def get_customer_history(self, query: str) -> CustomerHistory:
+        """Fetch complete purchase history, lifetime metrics, top items, and past bills for a customer.
+
+        `query` can be a 10-digit mobile number, or a customer name.
+        """
+        raw = query.strip()
+        clean_phone = None
+        try:
+            clean_phone = validate_phone_number(raw)
+        except ValueError:
+            clean_phone = None
+
+        cust_row = None
+        if clean_phone:
+            cust_row = self.db.query_one("SELECT * FROM customers WHERE phone = ?", (clean_phone,))
+        if not cust_row:
+            cust_row = self.db.query_one("SELECT * FROM customers WHERE name = ? COLLATE NOCASE", (raw,))
+        if not cust_row:
+            # Try search prefix/contains
+            cust_row = self.db.query_one(
+                "SELECT * FROM customers WHERE phone LIKE ? OR name LIKE ? LIMIT 1",
+                (f"%{raw}%", f"%{raw}%"),
+            )
+
+        # If still not found in customers table, check if any bills exist with customer_phone
+        if not cust_row and clean_phone:
+            bill_with_phone = self.db.query_one("SELECT * FROM bills WHERE customer_phone = ? LIMIT 1", (clean_phone,))
+            if bill_with_phone:
+                cust = self.find_or_create_customer(bill_with_phone["customer_name"] or "Customer", phone=clean_phone)
+                cust_row = self.db.query_one("SELECT * FROM customers WHERE id = ?", (cust.id,))
+
+        if not cust_row:
+            raise CustomerNotFound(f"No customer or purchase history found for '{query}'.")
+
+        cust = self._customer(cust_row)
+
+        # Find all finalized bills for this customer
+        params = [cust.id]
+        phone_clause = ""
+        if cust.phone:
+            phone_clause = " OR customer_phone = ?"
+            params.append(cust.phone)
+
+        bills = self.db.query_all(
+            f"SELECT * FROM bills WHERE status='finalized' AND (customer_id = ?{phone_clause}) ORDER BY finalized_at DESC, id DESC",
+            tuple(params),
+        )
+
+        total_visits = len(bills)
+        total_spend = sum(b["total_paise"] for b in bills)
+        avg_spend = (total_spend // total_visits) if total_visits > 0 else 0
+        first_visit = bills[-1]["finalized_at"][:10] if bills and bills[-1]["finalized_at"] else None
+        last_visit = bills[0]["finalized_at"][:10] if bills and bills[0]["finalized_at"] else None
+        khata_bal = self._balance_paise(cust.id)
+
+        recent_bills = []
+        for b in bills[:10]:
+            recent_bills.append({
+                "id": b["id"],
+                "invoice_no": b["invoice_no"],
+                "daily_seq": b["daily_seq"],
+                "date": (b["finalized_at"] or b["created_at"] or "")[:10],
+                "total_paise": b["total_paise"],
+                "payment_mode": b["payment_mode"] or "cash",
+                "billed_by": b["billed_by"] if "billed_by" in b.keys() else None,
+            })
+
+        top_products = []
+        bill_ids = [b["id"] for b in bills]
+        if bill_ids:
+            placeholders = ",".join("?" for _ in bill_ids)
+            prod_rows = self.db.query_all(
+                f"""SELECT bi.product_id, bi.name_snapshot, bi.unit,
+                           SUM(bi.qty_base) as total_qty,
+                           SUM(bi.line_total_paise) as total_spend,
+                           COUNT(DISTINCT bi.bill_id) as order_count
+                    FROM bill_items bi
+                    WHERE bi.bill_id IN ({placeholders})
+                    GROUP BY bi.product_id
+                    ORDER BY total_spend DESC
+                    LIMIT 10""",
+                tuple(bill_ids),
+            )
+            for pr in prod_rows:
+                top_products.append(CustomerPurchaseItem(
+                    product_id=pr["product_id"],
+                    name=pr["name_snapshot"],
+                    unit=pr["unit"],
+                    total_qty_display=format_qty(pr["total_qty"], pr["unit"]),
+                    total_spend_paise=pr["total_spend"],
+                    order_count=pr["order_count"],
+                ))
+
+        return CustomerHistory(
+            customer=cust,
+            phone=cust.phone,
+            total_visits=total_visits,
+            total_spend_paise=total_spend,
+            average_bill_paise=avg_spend,
+            first_visit_date=first_visit,
+            last_visit_date=last_visit,
+            khata_balance_paise=khata_bal,
+            recent_bills=recent_bills,
+            top_products=top_products,
+        )
+
     # ================================================================== #
     # ANALYTICS
     # ================================================================== #
@@ -754,6 +1183,10 @@ class Repository:
             by_payment=rep.by_payment, top_items=rep.top_items)
 
     def sales_report(self, start: str, end: str) -> SalesReport:
+        try:
+            start, end = validate_date_range(start, end)
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
         pred = ("status='finalized' AND substr(finalized_at,1,10) BETWEEN ? AND ?")
         bills = self.db.query_all(f"SELECT * FROM bills WHERE {pred}", (start, end))
         gross = sum(b["total_paise"] for b in bills)
@@ -773,6 +1206,10 @@ class Repository:
             by_day=by_day, top_items=self.top_items(start, end))
 
     def top_items(self, start: str, end: str, limit: int = 10) -> list[ItemSales]:
+        try:
+            start, end = validate_date_range(start, end)
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
         rows = self.db.query_all(
             """SELECT bi.product_id AS pid, bi.name_snapshot AS name, bi.unit AS unit,
                       SUM(bi.qty_base) AS qty, SUM(bi.line_total_paise) AS rev,
@@ -785,6 +1222,10 @@ class Repository:
                           r["rev"], r["cnt"]) for r in rows]
 
     def gst_collected(self, start: str, end: str) -> GstReport:
+        try:
+            start, end = validate_date_range(start, end)
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
         rows = self.db.query_all(
             """SELECT bi.gst_rate AS rate, SUM(bi.taxable_paise) AS taxable,
                       SUM(bi.cgst_paise) AS cgst, SUM(bi.sgst_paise) AS sgst
@@ -828,12 +1269,15 @@ class Repository:
 
     def get_shop_profile(self) -> ShopProfile:
         r = self.db.query_one("SELECT * FROM shop_profile WHERE id=1")
+        if not r:
+            return ShopProfile(name=None, gstin=None, address=None, phone=None, state_code="29", invoice_prefix="INV", logo_path=None)
+        logo = r["logo_path"] if "logo_path" in r.keys() else None
         return ShopProfile(name=r["name"], gstin=r["gstin"], address=r["address"],
                            phone=r["phone"], state_code=r["state_code"],
-                           invoice_prefix=r["invoice_prefix"])
+                           invoice_prefix=r["invoice_prefix"], logo_path=logo)
 
     def set_shop_profile(self, **fields) -> ShopProfile:
-        allowed = {"name", "gstin", "address", "phone", "state_code", "invoice_prefix"}
+        allowed = {"name", "gstin", "address", "phone", "state_code", "invoice_prefix", "logo_path"}
         sets, params = [], []
         for k, v in fields.items():
             if k in allowed and v is not None:
@@ -844,6 +1288,7 @@ class Repository:
                 c.execute(f"UPDATE shop_profile SET {', '.join(sets)}, updated_at=? WHERE id=1",
                           params)
         return self.get_shop_profile()
+
 
     # ================================================================== #
     # TRANSPORT (idempotency + session mapping)

@@ -65,6 +65,7 @@ async def get_preferences(args: dict) -> dict:
             "phone": {"type": "string", "description": "Contact phone number"},
             "state_code": {"type": "string", "description": "2-digit state code for GST (e.g. '27' for Maharashtra)"},
             "invoice_prefix": {"type": "string", "description": "Invoice number prefix, e.g. 'INV' or 'SHOP'"},
+            "logo_path": {"type": "string", "description": "File path to the store's logo image"},
         },
         "required": [],
     },
@@ -73,7 +74,7 @@ async def get_preferences(args: dict) -> dict:
 async def set_shop_profile(args: dict) -> dict:
     fields = {
         k: args[k]
-        for k in ("name", "gstin", "address", "phone", "state_code", "invoice_prefix")
+        for k in ("name", "gstin", "address", "phone", "state_code", "invoice_prefix", "logo_path")
         if k in args and args[k] is not None
     }
     if not fields:
@@ -88,12 +89,13 @@ async def set_shop_profile(args: dict) -> dict:
         phone=profile.phone,
         state_code=profile.state_code,
         invoice_prefix=profile.invoice_prefix,
+        logo_path=profile.logo_path,
     )
 
 
 @tool(
     "get_shop_profile",
-    "Retrieve the current shop profile (name, GSTIN, address, phone, invoice prefix). "
+    "Retrieve the current shop profile (name, GSTIN, address, phone, invoice prefix, logo_path). "
     "Use before generating an invoice or when the owner asks what's on file.",
     {
         "type": "object",
@@ -113,7 +115,9 @@ async def get_shop_profile(args: dict) -> dict:
         phone=profile.phone,
         state_code=profile.state_code,
         invoice_prefix=profile.invoice_prefix,
+        logo_path=profile.logo_path,
     )
+
 
 
 MEMORY_TOOLS = [set_preference, get_preferences, set_shop_profile, get_shop_profile]

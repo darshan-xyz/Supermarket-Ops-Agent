@@ -10,11 +10,20 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 import html as _html
+import io
 import logging
+import os
+from pathlib import Path
 import re
-import traceback
+from typing import Any
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    KeyboardButton,
+    ReplyKeyboardMarkup,
+    Update,
+)
 from telegram.constants import ChatAction, ParseMode
 from telegram.error import BadRequest
 from telegram.ext import (
@@ -26,11 +35,30 @@ from telegram.ext import (
     filters,
 )
 
+from datetime import datetime, timezone
+
 from ..agent.session import reset_session, run_turn
-from ..config import ensure_dirs, require_telegram_token
+from ..config import (
+    AUTO_RESTORE_ON_BOOT,
+    BACKUP_CHAT_ID,
+    PORT,
+    PROJECT_ROOT,
+    ensure_dirs,
+    require_telegram_token,
+)
 from ..db.master import get_master_registry
-from ..tools.context import get_repo, init_context
+from ..services.backup import (
+    auto_restore_if_needed,
+    checkpoint_all_databases,
+    create_backup_archive,
+    restore_backup_archive,
+    upload_backup_to_telegram,
+    verify_backup_archive,
+)
+from ..services.logo_service import validate_and_process_logo
+from ..tools.context import get_repo, init_context, take_output_files
 from .jobs import register_jobs
+from .web import HealthWebServer
 from .onboarding import (
     OnboardingStep,
     clear_onboarding_session,
@@ -40,6 +68,7 @@ from .onboarding import (
     prompt_phone_verification,
     start_onboarding,
 )
+
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +83,16 @@ _LANG_KEYBOARD = InlineKeyboardMarkup([
         InlineKeyboardButton("🇮🇳  हिंदी (Hindi / Hinglish)", callback_data="lang:Hindi"),
     ],
 ])
+
+_chat_locks: dict[int, asyncio.Lock] = {}
+
+
+def _get_chat_lock(chat_id: int) -> asyncio.Lock:
+    """Ensure strictly sequential message processing per chat to prevent race conditions and duplicate billing."""
+    if chat_id not in _chat_locks:
+        _chat_locks[chat_id] = asyncio.Lock()
+    return _chat_locks[chat_id]
+
 
 _WELCOME = (
     "🏪 <b>Kirana Operations Agent</b>\n"
@@ -98,7 +137,9 @@ _HELP = (
     "📊 Reports / அறிக்கைகள்\n"
     "• \"Innaiku sales evvalavu? / Aaj ki sales batao\"\n"
     "• \"Is hafte ki report dikhao / Inda vaaram report kattu\"\n\n"
-    "/new — naya conversation / புதிய உரையாடல்"
+    "/new — naya conversation / புதிய உரையாடல்\n"
+    "/backup — Download full store backup (.zip)\n"
+    "/restore — Restore database from backup .zip"
 )
 
 
@@ -418,7 +459,10 @@ async def _store_info(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             reply_markup=_LANG_KEYBOARD,
         )
         return
+    repo = registry.get_store_repo(tenant.store_code)
+    profile = repo.get_shop_profile()
     gstin_line = f"🏷️ <b>GSTIN:</b> {tenant.gstin}\n" if tenant.gstin else ""
+    logo_status = "🖼️ <b>Logo:</b> Active ✅ (Use /logo to view or change)\n" if (profile.logo_path and os.path.exists(profile.logo_path)) else "🖼️ <b>Logo:</b> Not configured (Use /logo to upload)\n"
     await update.message.reply_text(
         f"🏪 <b>{tenant.store_name}</b>\n\n"
         f"🔑 <b>Store Code:</b> <code>{tenant.store_code}</code>\n"
@@ -426,9 +470,383 @@ async def _store_info(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         f"📱 <b>Mobile:</b> {tenant.phone_e164}\n"
         f"📍 <b>Address:</b> {tenant.address}\n"
         f"{gstin_line}"
+        f"{logo_status}"
         f"💾 <b>Database:</b> <code>{tenant.db_filename}</code> (Isolated & Active)",
         parse_mode=ParseMode.HTML,
     )
+
+
+async def _logo_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """View current store logo or prompt to upload a new one."""
+    if not update.message or not update.effective_chat:
+        return
+    chat_id = update.effective_chat.id
+    registry = get_master_registry()
+    tenant = registry.get_tenant_for_chat(chat_id)
+    if not tenant:
+        await update.message.reply_text(
+            "ℹ️ No store registered to this chat yet. Type /start to register your supermarket!",
+            reply_markup=_LANG_KEYBOARD,
+        )
+        return
+
+    repo = registry.get_store_repo(tenant.store_code)
+    profile = repo.get_shop_profile()
+    lang = repo.get_preference("language") or "en"
+    context.chat_data["awaiting_logo_upload"] = True
+
+    if profile.logo_path and os.path.exists(profile.logo_path):
+        caption = {
+            "ta": (
+                "🖼️ <b>தற்போதைய கடையின் லோகோ</b>\n\n"
+                "புதிய லோகோவை மாற்ற விரும்பினால், இப்போது புதிய படத்தை (<b>PNG, JPG அல்லது WEBP</b>) அனுப்பவும்.\n"
+                "<i>(ரத்து செய்ய 'cancel' என அனுப்பவும்)</i>"
+            ),
+            "hi": (
+                "🖼️ <b>वर्तमान स्टोर लोगो</b>\n\n"
+                "नया लोगो सेट करने के लिए, कृपया नई इमेज (<b>PNG, JPG या WEBP</b>) भेजें।\n"
+                "<i>(रद्द करने के लिए 'cancel' लिखें)</i>"
+            ),
+            "en": (
+                "🖼️ <b>Current Store Logo</b>\n\n"
+                "To update your logo, please send a new photo or image file (<b>PNG, JPG, or WEBP</b>).\n"
+                "<i>(Type 'cancel' to keep current logo)</i>"
+            ),
+        }
+        try:
+            with open(profile.logo_path, "rb") as fh:
+                await update.message.reply_photo(
+                    photo=fh,
+                    caption=caption.get(lang, caption["en"]),
+                    parse_mode=ParseMode.HTML,
+                )
+            return
+        except Exception as exc:
+            logger.warning("Failed to reply with logo photo: %s", exc)
+
+    prompts = {
+        "ta": (
+            "🖼️ <b>கடையின் லோகோவை பதிவேற்றவும்:</b>\n\n"
+            "உங்கள் கடையின் லோகோவை (<b>PNG, JPG அல்லது WEBP</b> படமாக) இப்போது அனுப்பவும். "
+            "இது உங்கள் அனைத்து ஜிஎஸ்டி பில்கள், ரசீதுகள் மற்றும் விற்பனை அறிக்கைகளில் அச்சிடப்படும்!\n\n"
+            "<i>(ரத்து செய்ய 'cancel' என அனுப்பவும்)</i>"
+        ),
+        "hi": (
+            "🖼️ <b>स्टोर लोगो अपलोड करें:</b>\n\n"
+            "कृपया अपने स्टोर का लोगो इमेज (<b>PNG, JPG या WEBP</b>) भेजें। "
+            "यह आपके सभी जीएसटी इनवॉइस, बिल रसीदों और बिक्री रिपोर्टों पर दिखेगा!\n\n"
+            "<i>(रद्द करने के लिए 'cancel' लिखें)</i>"
+        ),
+        "en": (
+            "🖼️ <b>Upload Store Logo:</b>\n\n"
+            "Please send your store logo as a photo or image file (<b>PNG, JPG, or WEBP</b>). "
+            "This will appear on all your printed GST invoices, bill receipts, and reports!\n\n"
+            "<i>(Type 'cancel' to cancel)</i>"
+        ),
+    }
+    await update.message.reply_text(prompts.get(lang, prompts["en"]), parse_mode=ParseMode.HTML)
+
+
+async def _execute_store_deletion(
+    chat_id: int,
+    store_code: str,
+    lang: str,
+    context: ContextTypes.DEFAULT_TYPE,
+    reply_target: Any,
+    is_callback: bool = False,
+) -> None:
+    """Execute atomic 7-phase deletion under the chat's serialization lock."""
+    registry = get_master_registry()
+    async with _get_chat_lock(chat_id):
+        tenant = registry.get_tenant_by_code(store_code)
+        if not tenant:
+            if hasattr(reply_target, "reply_text"):
+                await reply_target.reply_text("ℹ️ Store not found or already deleted.")
+            return
+
+        store_name = tenant.store_name
+        phone = tenant.phone_e164
+
+        # 1. Purge from MasterRegistry (databases, logos, invoices, master DB rows)
+        registry.delete_tenant(store_code=store_code)
+
+        # 2. Reset conversational memory and AI context
+        reset_session(chat_id)
+
+        # 3. Clear onboarding state machine and Telegram chat context
+        clear_onboarding_session(chat_id)
+        context.chat_data.clear()
+        take_output_files(chat_id)
+
+        success_texts = {
+            "ta": (
+                "🗑️ <b>கடை மற்றும் கணக்கு வெற்றிகரமாக நீக்கப்பட்டது!</b>\n\n"
+                f"🏪 <b>{store_name}</b> (<code>{store_code}</code>) முற்றிலுமாக அழிக்கப்பட்டது.\n"
+                "• தனிப்பட்ட தரவுத்தளம், சரக்கு மற்றும் பில்லிங்: <b>அழிக்கப்பட்டது</b> ✅\n"
+                "• கடன் கணக்குகள் (Khata) மற்றும் அறிக்கைகள்: <b>அழிக்கப்பட்டது</b> ✅\n"
+                "• லோகோ மற்றும் கோப்புகள்: <b>அழிக்கப்பட்டது</b> ✅\n"
+                f"• மொபைல் எண் <code>{phone}</code>: <b>இணைப்பு நீக்கப்பட்டது</b> ✅\n\n"
+                "✨ <i>புதிய கடையைத் தொடங்க விரும்பும் போது, /start என அனுப்பவும்.</i>"
+            ),
+            "hi": (
+                "🗑️ <b>स्टोर और खाता सफलतापूर्वक हटा दिया गया!</b>\n\n"
+                f"🏪 <b>{store_name}</b> (<code>{store_code}</code>) पूरी तरह से हटा दिया गया है।\n"
+                "• डेटाबेस, स्टॉक और बिलिंग रिकॉर्ड्स: <b>हटा दिए गए</b> ✅\n"
+                "• खाता उधारी और इनवॉइस रिपोर्ट्स: <b>हटा दिए गए</b> ✅\n"
+                "• लोगो और फ़ाइलें: <b>हटा दी गईं</b> ✅\n"
+                f"• मोबाइल नंबर <code>{phone}</code>: <b>अनलिंक हो गया</b> ✅\n\n"
+                "✨ <i>जब भी आप नया स्टोर शुरू करना चाहें, बस /start भेजें।</i>"
+            ),
+            "en": (
+                "🗑️ <b>Store & Account Successfully Deleted!</b>\n\n"
+                f"🏪 <b>{store_name}</b> (<code>{store_code}</code>) has been completely removed.\n"
+                "• Dedicated database, inventory & billing records: <b>Purged</b> ✅\n"
+                "• Customer khata credit balances & reports: <b>Purged</b> ✅\n"
+                "• Store logo & asset files: <b>Purged</b> ✅\n"
+                f"• Mobile number <code>{phone}</code>: <b>Unlinked</b> ✅\n\n"
+                "✨ <i>Whenever you're ready to start fresh, simply type /start to create a new store.</i>"
+            ),
+        }
+
+        start_keyboard = ReplyKeyboardMarkup(
+            [[KeyboardButton("/start")]],
+            resize_keyboard=True,
+            one_time_keyboard=True,
+        )
+
+        msg = success_texts.get(lang, success_texts["en"])
+        if is_callback and hasattr(reply_target, "edit_text"):
+            await reply_target.edit_text(msg, parse_mode=ParseMode.HTML)
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text="👉 Type /start to register a new supermarket anytime.",
+                reply_markup=start_keyboard,
+            )
+        elif hasattr(reply_target, "reply_text"):
+            await reply_target.reply_text(msg, reply_markup=start_keyboard, parse_mode=ParseMode.HTML)
+
+
+async def _delete_account_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Prompt store owner with a high-friction confirmation card to delete store and account."""
+    if not update.message or not update.effective_chat:
+        return
+    chat_id = update.effective_chat.id
+    registry = get_master_registry()
+    tenant = registry.get_tenant_for_chat(chat_id)
+
+    if not tenant:
+        await update.message.reply_text(
+            "ℹ️ No active store is registered to this chat.\n"
+            "Type /start to register a new store!",
+            reply_markup=_LANG_KEYBOARD,
+        )
+        return
+
+    user = registry.get_user_for_chat(chat_id)
+    lang = normalize_lang(user.preferred_language if user else "en")
+
+    # Set confirmation challenge in context
+    context.chat_data["awaiting_delete_confirm"] = tenant.store_code
+
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(
+                "🔴 Yes, Delete Everything Permanently",
+                callback_data=f"del_acc:confirm:{tenant.store_code}",
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "❌ Cancel (Keep Store Safe)",
+                callback_data="del_acc:cancel",
+            )
+        ],
+    ])
+
+    warning_text = {
+        "ta": (
+            "⚠️ <b>கடை மற்றும் கணக்கை நிரந்தரமாக நீக்குதல் (DANGER: Permanent Deletion)</b>\n\n"
+            f"🏪 <b>கடை:</b> {tenant.store_name} (<code>{tenant.store_code}</code>)\n"
+            f"👤 <b>உரிமையாளர்:</b> {tenant.owner_name} | 📱 {tenant.phone_e164}\n"
+            f"📍 <b>முகவரி:</b> {tenant.address}\n\n"
+            "🚨 <b>இந்த செயல்முறை திரும்பப்பெற முடியாதது (IRREVERSIBLE). பின்வரும் அனைத்தும் நிரந்தரமாக அழிக்கப்படும்:</b>\n"
+            "• 📦 அனைத்து பொருட்கள், சரக்கு இருப்பு & காலாவதி (FEFO) தரவு\n"
+            "• 🧾 அனைத்து விற்பனை வரலாறு, பில்கள் & ஜிஎஸ்டி அறிக்கைகள்\n"
+            "• 📒 அனைத்து வாடிக்கையாளர் கடன் கணக்குகள் & நிலுவைத் தொகைகள்\n"
+            "• 🖼️ கடையின் லோகோ மற்றும் தனிப்பயன் அமைப்புகள்\n"
+            f"• 💾 தனிப்பட்ட தரவுத்தளம் (<code>{tenant.db_filename}</code>)\n\n"
+            "👉 <b>நீக்குவதை உறுதிப்படுத்த கீழே உள்ள சிவப்பு பட்டனை அழுத்தவும், அல்லது:</b>\n"
+            f"<code>CONFIRM DELETE {tenant.store_code}</code> என தட்டச்சு செய்யவும்.\n\n"
+            "<i>(ரத்து செய்ய 'cancel' என அனுப்பவும் அல்லது Cancel பட்டனை அழுத்தவும்)</i>"
+        ),
+        "hi": (
+            "⚠️ <b>स्टोर और खाता स्थायी रूप से हटाएं (DANGER: Permanent Deletion)</b>\n\n"
+            f"🏪 <b>स्टोर:</b> {tenant.store_name} (<code>{tenant.store_code}</code>)\n"
+            f"👤 <b>मालिक:</b> {tenant.owner_name} | 📱 {tenant.phone_e164}\n"
+            f"📍 <b>पता:</b> {tenant.address}\n\n"
+            "🚨 <b>यह प्रक्रिया अपरिवर्तनीय है (IRREVERSIBLE)। निम्न सभी डेटा हमेशा के लिए मिट जाएगा:</b>\n"
+            "• 📦 सभी प्रोडक्ट्स, स्टॉक और एक्सपायरी (FEFO) डेटा\n"
+            "• 🧾 सभी बिक्री इतिहास, बिल और जीएसटी रिपोर्ट्स\n"
+            "• 📒 सभी ग्राहक उधारी खाते और बकाया राशि\n"
+            "• 🖼️ स्टोर का लोगो और सेटिंग्स\n"
+            f"• 💾 आपका व्यक्तिगत डेटाबेस (<code>{tenant.db_filename}</code>)\n\n"
+            "👉 <b>हटाने की पुष्टि के लिए नीचे लाल बटन दबाएं, या:</b>\n"
+            f"<code>CONFIRM DELETE {tenant.store_code}</code> टाइप करें।\n\n"
+            "<i>(रद्द करने के लिए 'cancel' लिखें या Cancel बटन दबाएं)</i>"
+        ),
+        "en": (
+            "⚠️ <b>DANGER: Permanent Store & Account Deletion</b>\n\n"
+            f"🏪 <b>Store:</b> {tenant.store_name} (<code>{tenant.store_code}</code>)\n"
+            f"👤 <b>Owner:</b> {tenant.owner_name} | 📱 {tenant.phone_e164}\n"
+            f"📍 <b>Address:</b> {tenant.address}\n\n"
+            "🚨 <b>This action is IRREVERSIBLE. It will permanently purge:</b>\n"
+            "• 📦 All products, current inventory, batches & FEFO expiry tracking\n"
+            "• 🧾 All sales records, finalized bills & printed tax invoices\n"
+            "• 📒 All customer khata accounts, ledgers & outstanding balances\n"
+            "• 🖼️ Store logo and custom settings\n"
+            f"• 💾 Your dedicated store database (<code>{tenant.db_filename}</code>)\n\n"
+            "👉 <b>To confirm deletion, tap the red button below, or reply:</b>\n"
+            f"<code>CONFIRM DELETE {tenant.store_code}</code>\n\n"
+            "<i>(To abort, tap Cancel or reply 'cancel')</i>"
+        ),
+    }
+
+    await update.message.reply_text(
+        warning_text.get(lang, warning_text["en"]),
+        reply_markup=keyboard,
+        parse_mode=ParseMode.HTML,
+    )
+
+
+async def _delete_account_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle inline button clicks for delete account confirmation."""
+    query = update.callback_query
+    if query is None:
+        return
+    await query.answer()
+    data = query.data or ""
+    chat_id = update.effective_chat.id if update.effective_chat else 0
+    registry = get_master_registry()
+    user = registry.get_user_for_chat(chat_id)
+    lang = normalize_lang(user.preferred_language if user else "en")
+
+    if data == "del_acc:cancel":
+        context.chat_data.pop("awaiting_delete_confirm", None)
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        tenant = registry.get_tenant_for_chat(chat_id)
+        name = tenant.store_name if tenant else "Your store"
+        code = f" ({tenant.store_code})" if tenant else ""
+        cancel_msgs = {
+            "ta": f"✅ <b>நீக்குதல் ரத்து செய்யப்பட்டது:</b> உங்கள் கடை <b>{name}</b>{code} மற்றும் அனைத்து தரவுகளும் பாதுகாப்பாக உள்ளன.",
+            "hi": f"✅ <b>हटाना रद्द किया गया:</b> आपका स्टोर <b>{name}</b>{code} और सभी डेटा पूरी तरह सुरक्षित हैं।",
+            "en": f"✅ <b>Deletion Cancelled:</b> Your store <b>{name}</b>{code} and all data remain completely safe and active.",
+        }
+        if query.message:
+            await _reply(query.message, cancel_msgs.get(lang, cancel_msgs["en"]))
+        return
+
+    if data.startswith("del_acc:confirm:"):
+        store_code = data.replace("del_acc:confirm:", "", 1).strip()
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        if query.message:
+            await _execute_store_deletion(chat_id, store_code, lang, context, query.message, is_callback=True)
+
+
+async def _backup_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Create and send an on-demand database backup archive to the caller."""
+    if not update.effective_message:
+        return
+    msg = update.effective_message
+    status_msg = await msg.reply_text("⏳ <i>Generating secure backup snapshot of your store databases...</i>", parse_mode=ParseMode.HTML)
+    try:
+        archive_path = create_backup_archive()
+        registry = get_master_registry()
+        tenants = registry.list_all_tenants()
+
+        caption = (
+            "📦 <b>Supermarket Ops Agent Backup Snapshot</b>\n\n"
+            f"• 🏪 Active Stores: <b>{len(tenants)}</b>\n"
+            f"• 💾 Size: <b>{round(archive_path.stat().st_size / 1024, 1)} KB</b>\n"
+            f"• 📅 Created: <code>{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}</code>\n\n"
+            "<i>Keep this archive safe. You can restore this state anytime by replying to this file with <code>/restore</code>.</i>"
+        )
+        with open(archive_path, "rb") as fh:
+            await msg.reply_document(
+                document=fh,
+                caption=caption,
+                parse_mode=ParseMode.HTML,
+            )
+        try:
+            await status_msg.delete()
+        except Exception:
+            pass
+    except Exception as exc:
+        logger.error("Failed creating manual backup: %s", exc, exc_info=True)
+        await status_msg.edit_text(f"⚠️ Failed to generate backup snapshot: {exc}")
+
+
+async def _restore_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Restore database state from an attached or replied zip backup."""
+    if not update.effective_message:
+        return
+    msg = update.effective_message
+
+    doc = msg.document
+    # Check if this command was sent as a reply to a message containing a document
+    if not doc and msg.reply_to_message and msg.reply_to_message.document:
+        doc = msg.reply_to_message.document
+
+    if not doc or not doc.file_name or not doc.file_name.endswith(".zip"):
+        await msg.reply_text(
+            "ℹ️ <b>How to Restore Your Database:</b>\n\n"
+            "1. Upload your backup <code>.zip</code> file with caption <code>/restore</code>\n"
+            "<b>OR</b>\n"
+            "2. Reply to any previously sent backup message with <code>/restore</code>.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    status_msg = await msg.reply_text("⏳ <i>Downloading and verifying backup archive...</i>", parse_mode=ParseMode.HTML)
+    import tempfile
+
+    with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp_f:
+        tmp_path = Path(tmp_f.name)
+
+    try:
+        doc_file = await context.bot.get_file(doc.file_id)
+        await doc_file.download_to_drive(custom_path=str(tmp_path))
+
+        valid, reason = verify_backup_archive(tmp_path)
+        if not valid:
+            await status_msg.edit_text(
+                f"❌ <b>Restoration Failed:</b>\nArchive verification failed: {reason}",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        res = restore_backup_archive(tmp_path)
+        await status_msg.edit_text(
+            "✅ <b>Database Successfully Restored!</b>\n\n"
+            f"• 🏪 Stores Restored: <b>{res.get('stores_restored', 0)}</b>\n"
+            f"• 📁 Files Restored: <b>{res.get('files_restored', 0)}</b>\n\n"
+            "All inventory catalogs, batches, customer tabs, and khata records are active and loaded.",
+            parse_mode=ParseMode.HTML,
+        )
+    except Exception as exc:
+        logger.error("Restore failed: %s", exc, exc_info=True)
+        await status_msg.edit_text(f"⚠️ Failed to restore database: {exc}")
+    finally:
+        if tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except Exception:
+                pass
 
 
 async def _message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -438,7 +856,7 @@ async def _message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     chat_id: int = update.effective_chat.id  # type: ignore[union-attr]
 
-    # 1. Intercept onboarding state machine (phone verification, OTP, store questionnaire)
+    # 1. Intercept onboarding state machine (phone verification, OTP, store questionnaire, logo)
     if await handle_onboarding_step(update, context):
         return
 
@@ -458,12 +876,121 @@ async def _message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             parse_mode=ParseMode.HTML,
         )
         return
+
+    msg_text_lower = (update.message.text or "").strip().lower()
+
+    # 3. Check for active deletion confirmation challenge
+    awaiting_delete = context.chat_data.get("awaiting_delete_confirm")
+    if awaiting_delete:
+        if msg_text_lower in ("cancel", "no", "stop", "abort", "ரத்து", "रद्द"):
+            context.chat_data.pop("awaiting_delete_confirm", None)
+            user = registry.get_user_for_chat(chat_id)
+            lang = normalize_lang(user.preferred_language if user else "en")
+            cancel_msgs = {
+                "ta": f"✅ <b>நீக்குதல் ரத்து செய்யப்பட்டது:</b> உங்கள் கடை <b>{tenant.store_name}</b> ({tenant.store_code}) பாதுகாப்பாக உள்ளது.",
+                "hi": f"✅ <b>हटाना रद्द किया गया:</b> आपका स्टोर <b>{tenant.store_name}</b> ({tenant.store_code}) पूरी तरह सुरक्षित है।",
+                "en": f"✅ <b>Deletion Cancelled:</b> Your store <b>{tenant.store_name}</b> ({tenant.store_code}) remains completely safe.",
+            }
+            await update.message.reply_text(cancel_msgs.get(lang, cancel_msgs["en"]), parse_mode=ParseMode.HTML)
+            return
+
+        expected_phrases = [
+            "confirm delete",
+            f"confirm delete {awaiting_delete.lower()}",
+            f"delete {awaiting_delete.lower()}",
+        ]
+        if any(msg_text_lower == p for p in expected_phrases):
+            context.chat_data.pop("awaiting_delete_confirm", None)
+            user = registry.get_user_for_chat(chat_id)
+            lang = normalize_lang(user.preferred_language if user else "en")
+            await _execute_store_deletion(chat_id, awaiting_delete, lang, context, update.message, is_callback=False)
+            return
+
+    # 4. Check for natural language store deletion intent
+    deletion_keywords = (
+        "delete account",
+        "delete my account",
+        "delete store",
+        "delete my store",
+        "/delete_account",
+        "/deleteaccount",
+        "remove my store",
+        "remove store",
+        "கணக்கை நீக்கு",
+        "கடையை நீக்கு",
+        "खाता हटाएं",
+        "स्टोर हटाएं",
+    )
+    if any(msg_text_lower == kw for kw in deletion_keywords):
+        await _delete_account_command(update, context)
+        return
+
+    # 3. Check if this message is a logo upload for an existing store
+    caption = (update.message.caption or "").strip().lower()
+    msg_text_lower = (update.message.text or "").strip().lower()
+    is_logo_flow = context.chat_data.get("awaiting_logo_upload") or any(
+        k in caption for k in ("logo", "லோகோ", "लोगो", "store logo")
+    )
+
+    if context.chat_data.get("awaiting_logo_upload") and msg_text_lower in ("cancel", "stop", "close", "ரத்து", "रद्द"):
+        context.chat_data.pop("awaiting_logo_upload", None)
+        await update.message.reply_text("✅ Logo update cancelled.")
+        return
+
+    if is_logo_flow and (update.message.photo or update.message.document):
+        repo = get_repo()
+        lang = repo.get_preference("language") or "en"
+        stream = io.BytesIO()
+
+        if update.message.photo:
+            photo = update.message.photo[-1]
+            photo_file = await photo.get_file()
+            await photo_file.download_to_memory(out=stream)
+        elif update.message.document:
+            doc = update.message.document
+            if doc.file_size and doc.file_size > 5 * 1024 * 1024:
+                size_mb = doc.file_size / (1024 * 1024)
+                await update.message.reply_text(f"⚠️ The file is too large ({size_mb:.1f} MB). Logos must be under 5 MB.")
+                return
+            doc_file = await doc.get_file()
+            await doc_file.download_to_memory(out=stream)
+
+        stream.seek(0)
+        dest_logo = PROJECT_ROOT / "data" / "stores" / "logos" / f"store_{tenant.store_code}_logo.png"
+        res = validate_and_process_logo(stream, dest_logo)
+        if not res.is_valid:
+            await update.message.reply_text(res.get_message(lang), parse_mode=ParseMode.HTML)
+            return
+
+        repo.set_shop_profile(logo_path=res.saved_path)
+        context.chat_data.pop("awaiting_logo_upload", None)
+
+        success_msgs = {
+            "ta": (
+                "✅ <b>கடையின் லோகோ வெற்றிகரமாகப் புதுப்பிக்கப்பட்டது!</b>\n\n"
+                "உங்கள் லோகோ சேமிக்கப்பட்டது. இது உங்கள் அனைத்து ஜிஎஸ்டி பில்கள், ரசீதுகள் மற்றும் விற்பனை அறிக்கைகளில் பிரதிபலிக்கும்."
+            ),
+            "hi": (
+                "✅ <b>स्टोर लोगो सफलतापूर्वक अपडेट हो गया!</b>\n\n"
+                "आपका लोगो सेव हो गया है। यह आपके सभी जीएसटी इनवॉइस, बिल रसीदों और बिक्री रिपोर्टों पर दिखेगा।"
+            ),
+            "en": (
+                "✅ <b>Store Logo Updated Successfully!</b>\n\n"
+                "Your logo is now active and will reflect on all printed GST invoices, bill receipts, and reports."
+            ),
+        }
+        await update.message.reply_text(success_msgs.get(lang, success_msgs["en"]), parse_mode=ParseMode.HTML)
+        return
+
     text: str = update.message.text or update.message.caption or ""
     media_bytes: bytes | None = None
     media_mime: str | None = None
 
     # Handle voice notes or audio recordings (transcribe & order)
     if update.message.voice:
+        if update.message.voice.file_size and update.message.voice.file_size > 20 * 1024 * 1024:
+            await update.message.reply_text("⚠️ Voice file exceeds the 20 MB size limit.")
+            return
         try:
             voice_file = await update.message.voice.get_file()
             buf = bytearray()
@@ -476,6 +1003,9 @@ async def _message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             logger.warning("Failed to download voice note: %s", e)
 
     elif update.message.audio:
+        if update.message.audio.file_size and update.message.audio.file_size > 20 * 1024 * 1024:
+            await update.message.reply_text("⚠️ Audio file exceeds the 20 MB size limit.")
+            return
         try:
             audio_file = await update.message.audio.get_file()
             buf = bytearray()
@@ -489,9 +1019,11 @@ async def _message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     # Handle photos / barcodes
     elif update.message.photo:
+        photo = update.message.photo[-1]
+        if photo.file_size and photo.file_size > 20 * 1024 * 1024:
+            await update.message.reply_text("⚠️ Photo file exceeds the 20 MB size limit.")
+            return
         try:
-            # highest resolution photo is the last item
-            photo = update.message.photo[-1]
             photo_file = await photo.get_file()
             buf = bytearray()
             await photo_file.download_as_bytearray(buf)
@@ -511,76 +1043,125 @@ async def _message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.info("Skipping duplicate update_id=%d for chat_id=%d", update.update_id, chat_id)
         return
 
-    try:
-        async with _typing_heartbeat(context.bot, chat_id):
-            res = await run_turn(chat_id, text, media_bytes=media_bytes, media_mime=media_mime)
-    except Exception as exc:
-        logger.error(
-            "run_turn failed for chat_id=%d update_id=%d: %s",
-            chat_id, update.update_id, exc,
-            exc_info=True,
-        )
-        err_text = str(exc)
-        lang = repo.get_preference("language") or "en"
-        if "429" in err_text or "RESOURCE_EXHAUSTED" in err_text:
-            if "ta" in lang:
-                msg = (
-                    "⚠️ <b>கூகிள் ஏஐ வரம்பு நிறைவடைந்தது (Quota Limit)</b>\n\n"
-                    "இலவச ஏஐ சேவை தற்காலிகமாக நிறைவடைந்துள்ளது. 1 நிமிடத்தில் மீண்டும் முயற்சிக்கவும்."
-                )
-            elif "hi" in lang:
-                msg = (
-                    "⚠️ <b>Google AI कोटा सीमा समाप्त (Quota Limit)</b>\n\n"
-                    "AI सेवा की सीमा पूरी हो गई है। कृपया 1 मिनट प्रतीक्षा करें और दोबारा प्रयास करें।"
-                )
-            else:
-                msg = (
-                    "⚠️ <b>Google AI Free Quota Limit Reached</b>\n\n"
-                    "The Gemini API free-tier quota is cooling down. Please wait 1 minute and try again."
-                )
-        elif "503" in err_text or "UNAVAILABLE" in err_text:
-            if "ta" in lang:
-                msg = "⚠️ AI சேவையகம் தற்போது அதிக சுமையிலுள்ளது. தயவுசெய்து சிறிது நொடிகள் கழித்து முயற்சிக்கவும்."
-            elif "hi" in lang:
-                msg = "⚠️ AI सर्वर पर अभी अधिक लोड है। कृपया कुछ सेकंड बाद पुनः प्रयास करें।"
-            else:
-                msg = "⚠️ The AI server is experiencing temporary high demand. Please try again in a moment."
-        else:
-            if "ta" in lang:
-                msg = "மன்னிக்கவும், ஒரு சிறிய பிழை ஏற்பட்டது. தயவுசெய்து மீண்டும் முயற்சிக்கவும்."
-            elif "hi" in lang:
-                msg = "माफ़ करें, कोई समस्या आई। कृपया दोबारा प्रयास करें।"
-            else:
-                msg = "Sorry, something went wrong processing your request. Please try again."
-
-        await _reply(update.message, msg)
-        return
-
-    if res.reply:
-        await _reply(update.message, res.reply)
-
-    for f in res.files:
+    async with _get_chat_lock(chat_id):
         try:
-            with open(f.path, "rb") as fh:
-                await context.bot.send_document(
-                    chat_id=chat_id,
-                    document=fh,
-                    caption=f.caption or None,
-                )
+            async with _typing_heartbeat(context.bot, chat_id):
+                res = await run_turn(chat_id, text, media_bytes=media_bytes, media_mime=media_mime)
         except Exception as exc:
-            logger.error("Failed to send document %s: %s", f.path, exc, exc_info=True)
+            logger.error(
+                "run_turn failed for chat_id=%d update_id=%d: %s",
+                chat_id, update.update_id, exc,
+                exc_info=True,
+            )
+            err_text = str(exc)
+            lang = repo.get_preference("language") or "en"
+            if "429" in err_text or "RESOURCE_EXHAUSTED" in err_text:
+                if "ta" in lang:
+                    msg = (
+                        "⚠️ <b>கூகிள் ஏஐ வரம்பு நிறைவடைந்தது (Quota Limit)</b>\n\n"
+                        "இலவச ஏஐ சேவை தற்காலிகமாக நிறைவடைந்துள்ளது. 1 நிமிடத்தில் மீண்டும் முயற்சிக்கவும்."
+                    )
+                elif "hi" in lang:
+                    msg = (
+                        "⚠️ <b>Google AI कोटा सीमा समाप्त (Quota Limit)</b>\n\n"
+                        "AI सेवा की सीमा पूरी हो गई है। कृपया 1 मिनट प्रतीक्षा करें और दोबारा प्रयास करें।"
+                    )
+                else:
+                    msg = (
+                        "⚠️ <b>Google AI Free Quota Limit Reached</b>\n\n"
+                        "The Gemini API free-tier quota is cooling down. Please wait 1 minute and try again."
+                    )
+            elif "503" in err_text or "UNAVAILABLE" in err_text:
+                if "ta" in lang:
+                    msg = "⚠️ AI சேவையகம் தற்போது அதிக சுமையிலுள்ளது. தயவுசெய்து சிறிது நொடிகள் கழித்து முயற்சிக்கவும்."
+                elif "hi" in lang:
+                    msg = "⚠️ AI सर्वर पर अभी अधिक लोड है। कृपया कुछ सेकंड बाद पुनः प्रयास करें।"
+                else:
+                    msg = "⚠️ The AI server is experiencing temporary high demand. Please try again in a moment."
+            else:
+                if "ta" in lang:
+                    msg = "மன்னிக்கவும், ஒரு சிறிய பிழை ஏற்பட்டது. தயவுசெய்து மீண்டும் முயற்சிக்கவும்."
+                elif "hi" in lang:
+                    msg = "माफ़ करें, कोई समस्या आई। कृपया दोबारा प्रयास करें।"
+                else:
+                    msg = "Sorry, something went wrong processing your request. Please try again."
+
+            await _reply(update.message, msg)
+            return
+
+        if res.reply:
+            await _reply(update.message, res.reply)
+
+        for f in res.files:
+            try:
+                with open(f.path, "rb") as fh:
+                    await context.bot.send_document(
+                        chat_id=chat_id,
+                        document=fh,
+                        caption=f.caption or None,
+                    )
+            except Exception as exc:
+                logger.error("Failed to send document %s: %s", f.path, exc, exc_info=True)
 
 
 async def _error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Global PTB error handler — logs and notifies the user if possible."""
+    """Global PTB error handler — logs internally and sends sanitized message to user."""
     logger.error("Unhandled PTB error: %s", context.error, exc_info=context.error)
     if isinstance(update, Update) and update.effective_message is not None:
-        tb = "".join(traceback.format_exception(type(context.error), context.error, context.error.__traceback__ if context.error else None))
-        short = str(context.error)[:150] if context.error else "unknown error"
-        logger.debug("Traceback:\n%s", tb)
+        chat_id = update.effective_chat.id if update.effective_chat else 0
+        lang = "en"
+        try:
+            registry = get_master_registry()
+            user = registry.get_user_for_chat(chat_id)
+            if user and user.preferred_language:
+                lang = normalize_lang(user.preferred_language)
+        except Exception:
+            pass
+
+        safe_err_msgs = {
+            "ta": "⚠️ மன்னிக்கவும், உங்கள் கோரிக்கையைச் செயலாக்குவதில் ஒரு எதிர்பாராத பிழை ஏற்பட்டது. தயவுசெய்து சிறிது நேரம் கழித்து மீண்டும் முயற்சிக்கவும்.",
+            "hi": "⚠️ माफ़ करें, आपके अनुरोध को प्रोसेस करने में एक अनपेक्षित समस्या आई। कृपया थोड़ी देर बाद पुनः प्रयास करें।",
+            "en": "⚠️ Sorry, an unexpected error occurred while processing your request. Please try again in a moment.",
+        }
         await update.effective_message.reply_text(
-            f"Maafi chahta hoon, kuch error aa gayi: {short}"
+            safe_err_msgs.get(lang, safe_err_msgs["en"])
         )
+
+
+async def _post_init(application: Application) -> None:
+    """Run boot state recovery and launch health web server on PORT."""
+    if AUTO_RESTORE_ON_BOOT:
+        try:
+            await auto_restore_if_needed(application.bot)
+        except Exception as exc:
+            logger.warning("Error during boot auto-restore check: %s", exc)
+
+    # Start health HTTP server for keep-alive monitoring and cloud port binding
+    web_server = HealthWebServer(port=PORT)
+    await web_server.start()
+    application.bot_data["web_server"] = web_server
+
+
+async def _post_shutdown(application: Application) -> None:
+    """Graceful shutdown: stop web server, flush WAL checkpoints, and upload emergency backup."""
+    web_server = application.bot_data.get("web_server")
+    if web_server:
+        await web_server.stop()
+
+    checkpoint_all_databases()
+
+    # Emergency backup snapshot on shutdown if configured
+    if BACKUP_CHAT_ID:
+        try:
+            await upload_backup_to_telegram(
+                application.bot,
+                BACKUP_CHAT_ID,
+                pin=True,
+                caption_prefix="📦 #kirana_backup [Graceful Shutdown Snapshot]",
+            )
+            logger.info("Shutdown emergency backup completed successfully.")
+        except Exception as exc:
+            logger.warning("Failed uploading shutdown backup: %s", exc)
 
 
 def main() -> None:
@@ -598,6 +1179,8 @@ def main() -> None:
     application = (
         Application.builder()
         .token(token)
+        .post_init(_post_init)
+        .post_shutdown(_post_shutdown)
         .build()
     )
 
@@ -608,11 +1191,21 @@ def main() -> None:
     application.add_handler(CommandHandler("lang", _lang))
     application.add_handler(CommandHandler("store", _store_info))
     application.add_handler(CommandHandler("profile", _store_info))
+    application.add_handler(CommandHandler("logo", _logo_command))
     application.add_handler(CommandHandler("inventory", _inventory))
     application.add_handler(CommandHandler("stock", _inventory))
+    application.add_handler(CommandHandler("backup", _backup_command))
+    application.add_handler(CommandHandler("restore", _restore_command))
+    application.add_handler(CommandHandler("delete_account", _delete_account_command))
+    application.add_handler(CommandHandler("deleteaccount", _delete_account_command))
     application.add_handler(CallbackQueryHandler(_language_callback, pattern=r"^lang:"))
+    application.add_handler(CallbackQueryHandler(_delete_account_callback, pattern=r"^del_acc:"))
     application.add_handler(
-        MessageHandler((filters.TEXT | filters.VOICE | filters.AUDIO | filters.PHOTO | filters.CONTACT) & ~filters.COMMAND, _message)
+        MessageHandler(
+            (filters.TEXT | filters.VOICE | filters.AUDIO | filters.PHOTO | filters.CONTACT | filters.Document.ALL)
+            & ~filters.COMMAND,
+            _message,
+        )
     )
     application.add_error_handler(_error_handler)
 

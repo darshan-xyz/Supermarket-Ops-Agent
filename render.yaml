@@ -1,25 +1,36 @@
-# One-click deploy to Render (https://render.com). The bot uses long polling,
-# so it runs as a background worker (no public URL needed).
+# One-click 100% Free Deploy to Render (https://render.com).
+# No credit card, debit card, or payment info required!
 #
-# Deploy: push this repo to GitHub, "New +" -> "Blueprint", point at the repo,
-# then set GEMINI_API_KEY and TELEGRAM_BOT_TOKEN in the dashboard.
+# Deploy Instructions:
+# 1. Push this repository to your GitHub account.
+# 2. In Render dashboard: Click "New +" -> "Blueprint", select your repository.
+# 3. Enter your secret environment variables:
+#    - GEMINI_API_KEY (from https://aistudio.google.com)
+#    - TELEGRAM_BOT_TOKEN (from @BotFather on Telegram)
+#    - TELEGRAM_BACKUP_CHAT_ID (optional: your personal Telegram ID or backup group ID)
+# 4. Click "Apply". Render will build the Docker container and start your bot!
+# 5. Set up free 24/7 uptime keep-alive:
+#    - In UptimeRobot.com (free, no card), add an HTTP(s) monitor to:
+#      https://<your-render-service-name>.onrender.com/health (every 10 minutes).
+#
 services:
-  - type: worker
+  - type: web
     name: kirana-ops-agent
     runtime: docker
-    plan: starter            # a paid plan is needed for a persistent disk
+    plan: free
     dockerfilePath: ./Dockerfile
     autoDeploy: true
-    disk:
-      name: kirana-data
-      mountPath: /app/data   # KIRANA_DB_PATH lives here -> durable across deploys
-      sizeGB: 1
+    healthCheckPath: /health
     envVars:
       - key: GEMINI_API_KEY
-        sync: false          # set in dashboard (secret)
+        sync: false          # set in Render dashboard (secret)
       - key: TELEGRAM_BOT_TOKEN
-        sync: false          # set in dashboard (secret)
+        sync: false          # set in Render dashboard (secret)
+      - key: TELEGRAM_BACKUP_CHAT_ID
+        sync: false          # optional: your chat id for automated cloud backups
       - key: KIRANA_MODEL
-        value: gemini-3.6-flash
-      - key: KIRANA_DB_PATH
-        value: /app/data/kirana.db
+        value: gemini-3.1-flash-lite
+      - key: PORT
+        value: 10000
+      - key: BACKUP_AUTO_RESTORE_ON_BOOT
+        value: "1"

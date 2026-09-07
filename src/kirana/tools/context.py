@@ -21,6 +21,8 @@ _repo: Repository | None = None
 current_chat: ContextVar[int | None] = ContextVar("current_chat", default=None)
 # optional override for explicit tenant repository per turn
 current_tenant_repo: ContextVar[Repository | None] = ContextVar("current_tenant_repo", default=None)
+# set by agent/session.py so tools can inspect user's prompt (e.g. for variant disambiguation)
+current_user_message: ContextVar[str | None] = ContextVar("current_user_message", default=None)
 
 
 @dataclass

@@ -40,6 +40,8 @@ class Database:
         self.path = str(path)
         self._local = threading.local()
         self._write_lock = threading.RLock()
+        self._all_conns: set[sqlite3.Connection] = set()
+        self._conns_lock = threading.Lock()
 
     def _conn(self) -> sqlite3.Connection:
         conn = getattr(self._local, "conn", None)
@@ -51,6 +53,8 @@ class Database:
             conn.execute("PRAGMA busy_timeout=10000")
             conn.execute("PRAGMA synchronous=NORMAL")
             self._local.conn = conn
+            with self._conns_lock:
+                self._all_conns.add(conn)
         return conn
 
     def init_schema(self) -> None:
@@ -80,7 +84,16 @@ class Database:
                 raise
 
     def close(self) -> None:
-        conn = getattr(self._local, "conn", None)
-        if conn is not None:
-            conn.close()
-            self._local.conn = None
+        with self._conns_lock:
+            for conn in list(self._all_conns):
+                try:
+                    conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                except Exception:
+                    pass
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+            self._all_conns.clear()
+        self._local.conn = None
+

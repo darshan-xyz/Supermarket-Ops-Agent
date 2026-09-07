@@ -82,6 +82,32 @@ def to_base(qty: Decimal | float | int | str, input_unit: str | None, product_un
         )
     # qty in product units = qty * (canon_input / canon_product)
     qty_in_product = q * (canon_i / canon_p)
+
+    # Physical & commercial retail checks for positive quantities
+    if q > 0:
+        # Packaged and count units are discrete (cannot tear open sealed packets or sell fractional pieces)
+        if prod == "packet" and (qty_in_product % 1 != 0 or qty_in_product < 1):
+            raise UnitError(
+                f"Packets are discrete sealed units and cannot be fractional or less than 1 packet (got {q} packet). "
+                "Only whole packets can be billed or stocked."
+            )
+        if dim_p == "count" and ((q * canon_i) % 1 != 0 or (q * canon_i) < 1):
+            raise UnitError(
+                f"Count items must be in whole pieces (got {q} {inp})."
+            )
+
+        # Minimum physical measurable thresholds for loose bulk items on retail scales
+        if prod == "kg" and qty_in_product < Decimal("0.01"):
+            raise UnitError(
+                f"Quantity '{q} {inp}' is too small to be weighed on retail scales. "
+                "Minimum measurable quantity for loose weight items is 10 g (0.01 kg)."
+            )
+        if prod == "litre" and qty_in_product < Decimal("0.01"):
+            raise UnitError(
+                f"Quantity '{q} {inp}' is too small to be measured. "
+                "Minimum measurable quantity for loose liquid items is 10 ml (0.01 litre)."
+            )
+
     base = (qty_in_product * MILLI).quantize(Decimal(1), rounding=ROUND_HALF_UP)
     return int(base)
 

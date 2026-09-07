@@ -29,7 +29,7 @@ Never assume. A mis-matched product ID creates ghost stock.
 
 ## Tool call sequence
 
-### Restocking an existing product
+### Restocking an existing product (Inward Shipments ONLY)
 
 ```
 search_products(query="Maggi 70g")
@@ -37,7 +37,41 @@ search_products(query="Maggi 70g")
 receive_stock(product_id, quantity, unit, cost_rupees, mrp_rupees, sell_rupees)
 ```
 
+`receive_stock` is strictly for inward incoming stock (adding stock). It can NEVER be used to reduce stock.
 `sell_rupees` is optional; omit if the owner doesn't specify (the repo will default to the last sell price).
+
+### Adjusting stock (Reductions, Damage, Spoilage, Physical Audit)
+
+```
+adjust_stock(
+  product_id,
+  quantity,
+  unit?,                # optional, defaults to product unit
+  mode="reduce",        # "reduce" for damage/spoilage/waste; "set" for physical audit count; "add" for audit surplus
+  reason="damage",      # "damage" | "spoilage" | "audit_correction" | "theft" | "internal_use" | "expired"
+  note?                 # optional notes
+)
+```
+
+Use `adjust_stock` whenever stock needs to be reduced, discarded, or corrected:
+- Damaged goods: `adjust_stock(product_id=X, quantity=5, mode="reduce", reason="damage", note="crushed in transit")`
+- Spoiled / Expired: `adjust_stock(product_id=X, quantity=2, mode="reduce", reason="spoilage")`
+- Audit physical count: `adjust_stock(product_id=X, quantity=30, mode="set", reason="audit_correction")`
+
+### Updating product prices & catalog details (without restocking)
+
+```
+update_product(
+  product_id,
+  sell_rupees?,         # new selling price
+  mrp_rupees?,          # new MRP
+  cost_rupees?,         # new cost/purchase price
+  reorder_qty?,         # new reorder level
+  brand?, aliases?, gst_rate?
+)
+```
+
+Use `update_product` when changing selling price, MRP, or cost when no stock arrived. Enforces Legal Metrology (`sell_rupees <= mrp_rupees`).
 
 ### Adding a new product
 
@@ -53,13 +87,15 @@ add_product(
 )
 ```
 
-### Checking stock / reorder
-
+### Checking stock / inventory
 ```
+list_inventory()               # all available products with health summary metrics and stock quantities
 get_stock(product_id)          # single item
 list_low_stock()               # all items at or below reorder point
 reorder_suggestions()          # velocity-based suggestions
 ```
+
+When listing store inventory, always present both the inventory health block (Total SKUs, out of stock, low stock, cost value, retail value) and the full product list together.
 
 ## GST slab guidance (informational — the repo applies the actual rate)
 
