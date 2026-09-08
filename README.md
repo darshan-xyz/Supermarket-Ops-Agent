@@ -22,11 +22,14 @@
 
 <div align="center">
 
-<img src="docs/demo_animated_player.gif" alt="Supermarket-Ops-Agent Live Operations Video Walkthrough" width="100%" style="max-width: 900px; border-radius: 12px; box-shadow: 0 8px 32px rgba(0,0,0,0.35);">
+<video src="video.mp4" controls="controls" width="100%" style="max-width: 850px; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.15);">
+  <source src="video.mp4" type="video/mp4">
+  Your browser does not support the video tag.
+</video>
 
 <p>
-  <b>🎥 Live Autonomous Supermarket Operations Walkthrough</b><br>
-  <sub><i>Real-time conversational multi-item billing, cashier attribution, FEFO inventory, and automated PDF tax invoices</i></sub>
+  <b>🎥 Live System Operations Walkthrough</b><br>
+  <sub><i>If your markdown viewer does not render the inline player above, <a href="video.mp4">click here to play / download <code>video.mp4</code> directly</a>.</i></sub>
 </p>
 
 </div>
