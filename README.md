@@ -3,7 +3,7 @@
 <div align="center">
 
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://python.org)
-[![Tests](https://img.shields.io/badge/Tests-184%20Passing-22C55E?style=flat-square&logo=pytest&logoColor=white)](https://docs.pytest.org)
+[![Tests](https://img.shields.io/badge/Tests-192%20Passing-22C55E?style=flat-square&logo=pytest&logoColor=white)](https://docs.pytest.org)
 [![LLM](https://img.shields.io/badge/Gemini-3.6%20Flash-4285F4?style=flat-square&logo=google&logoColor=white)](https://ai.google.dev)
 [![Database](https://img.shields.io/badge/SQLite-WAL%20Multi--Tenant-003B57?style=flat-square&logo=sqlite&logoColor=white)](https://sqlite.org)
 [![Telegram](https://img.shields.io/badge/Telegram-Bot%20API-26A5E4?style=flat-square&logo=telegram&logoColor=white)](https://t.me/Marketopsagentbot)
@@ -12,7 +12,25 @@
 
 **An autonomous, multi-tenant conversational operations system for Indian supermarkets and Kirana stores built on Google Gemini.**
 
-[Live Telegram Bot (@Marketopsagentbot)](https://t.me/Marketopsagentbot) • [System Architecture](#system-architecture) • [Control Loop](#agent-harness--control-loop-architecture) • [Skill Playbooks](#skill-playbooks-architecture--tool-design) • [The 9 Hard Parts](#technical-invariants--the-9-hard-parts) • [PDF Stretch Goals (8/8)](#pdf-stretch-goals-implemented-all-8-completed) • [Standout Features Beyond PDF](#standout-features-built-beyond-the-pdf-specification) • [Tool Catalog](#tool-catalog-32-tools) • [Multilingual Matrix](#multilingual-catalog-alias-resolution-matrix) • [Artifact Engines](#artifact-generation-engines) • [Demo Script](#45-minute-demo-walkthrough-script) • [Quickstart](#quickstart--deployment) • [184 Tests](#automated-verification-184-tests)
+[Live Telegram Bot (@Marketopsagentbot)](https://t.me/Marketopsagentbot) • [Demo Video](#demo-video) • [System Architecture](#system-architecture) • [Control Loop](#agent-harness--control-loop-architecture) • [Skill Playbooks](#skill-playbooks-architecture--tool-design) • [The 9 Hard Parts](#technical-invariants--the-9-hard-parts) • [PDF Stretch Goals (8/8)](#pdf-stretch-goals-implemented-all-8-completed) • [Standout Features Beyond PDF](#standout-features-built-beyond-the-pdf-specification) • [Tool Catalog (36 Tools)](#tool-catalog-36-tools) • [Multilingual Matrix](#multilingual-catalog-alias-resolution-matrix) • [Artifact Engines](#artifact-generation-engines) • [Quickstart](#quickstart--deployment) • [192 Tests](#automated-verification-192-tests)
+
+</div>
+
+---
+
+## Demo Video
+
+<div align="center">
+
+<video src="video.mp4" controls="controls" width="100%" style="max-width: 850px; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.15);">
+  <source src="video.mp4" type="video/mp4">
+  Your browser does not support the video tag.
+</video>
+
+<p>
+  <b>🎥 Live System Operations Walkthrough</b><br>
+  <sub><i>If your markdown viewer does not render the inline player above, <a href="video.mp4">click here to play / download <code>video.mp4</code> directly</a>.</i></sub>
+</p>
 
 </div>
 
@@ -20,17 +38,18 @@
 
 ## Table of Contents
 
-1. [Executive Summary & Problem Statement](#executive-summary--problem-statement)
-2. [Take-Home Specification Compliance Matrix](#take-home-specification-compliance-matrix)
-3. [Agent Harness & Control Loop Architecture](#agent-harness--control-loop-architecture)
+1. [Demo Video](#demo-video)
+2. [Executive Summary & Problem Statement](#executive-summary--problem-statement)
+3. [Take-Home Specification Compliance Matrix](#take-home-specification-compliance-matrix)
+4. [Agent Harness & Control Loop Architecture](#agent-harness--control-loop-architecture)
    - [Harness Selection Rationale: Gemini 3.6 Flash vs Frameworks](#harness-selection-rationale-gemini-36-flash-vs-frameworks)
    - [The Observe-Reason-Act Control Loop](#the-observe-reason-act-control-loop)
-4. [Skill Playbooks Architecture & Tool Design](#skill-playbooks-architecture--tool-design)
+5. [Skill Playbooks Architecture & Tool Design](#skill-playbooks-architecture--tool-design)
    - [Why Skills Matter in Agentic Design](#why-skills-matter-in-agentic-design)
    - [Skill Loading Pipeline](#skill-loading-pipeline)
    - [Deep Dive into the 6 Domain Skills](#deep-dive-into-the-6-domain-skills)
-5. [System Architecture](#system-architecture)
-6. [Technical Invariants & The 9 Hard Parts](#technical-invariants--the-9-hard-parts)
+6. [System Architecture](#system-architecture)
+7. [Technical Invariants & The 9 Hard Parts](#technical-invariants--the-9-hard-parts)
    - [1. Strict Data Grounding (Zero Hallucination)](#1-strict-data-grounding-zero-hallucination)
    - [2. Deterministic Zero-Oversell Guard](#2-deterministic-zero-oversell-guard)
    - [3. Statutory GST Reverse Calculation Engine](#3-statutory-gst-reverse-calculation-engine)
@@ -40,32 +59,34 @@
    - [7. Operational Safety Guardrails](#7-operational-safety-guardrails)
    - [8. Real Document Artifact Generation](#8-real-document-artifact-generation)
    - [9. Durable Cross-Session Memory](#9-durable-cross-session-memory)
-7. [Core Store Capabilities Matrix](#core-store-capabilities-matrix)
-8. [Multilingual & Multimodal Operational Workflows](#multilingual--multimodal-operational-workflows)
+8. [Core Store Capabilities Matrix](#core-store-capabilities-matrix)
+9. [Multilingual & Multimodal Operational Workflows](#multilingual--multimodal-operational-workflows)
    - [Hindi Devanagari & Hinglish Dialogues](#hindi-devanagari--hinglish-dialogues)
    - [Tamil Script & Tanglish Dialogues](#tamil-script--tanglish-dialogues)
    - [Terse English Counterphrasing](#terse-english-counterphrasing)
    - [Model-Driven Ambiguity Disambiguation](#model-driven-ambiguity-disambiguation)
-9. [PDF Stretch Goals Implemented (All 8 Completed)](#pdf-stretch-goals-implemented-all-8-completed)
-10. [Standout Features Built Beyond the PDF Specification](#standout-features-built-beyond-the-pdf-specification)
+10. [PDF Stretch Goals Implemented (All 8 Completed)](#pdf-stretch-goals-implemented-all-8-completed)
+11. [Standout Features Built Beyond the PDF Specification](#standout-features-built-beyond-the-pdf-specification)
     - [1. True Multi-Tenant SQLite Database Isolation](#1-true-multi-tenant-sqlite-database-isolation)
     - [2. In-Chat Phone & Cryptographic OTP Authentication with RBAC](#2-in-chat-phone--cryptographic-otp-authentication-with-rbac)
-    - [3. Customer CRM & Lifetime Purchase Analytics](#3-customer-crm--lifetime-purchase-analytics)
-    - [4. Product Variants & Weight Disambiguation Engine](#4-product-variants--weight-disambiguation-engine)
-    - [5. Enterprise Security & Safety Guardrails Engine](#5-enterprise-security--safety-guardrails-engine)
-    - [6. Automated Cloud Backup & Zero-Downtime Disaster Recovery](#6-automated-cloud-backup--zero-downtime-disaster-recovery)
-    - [7. Dynamic Store Logo Processing & Retina Resampling](#7-dynamic-store-logo-processing--retina-resampling)
-    - [8. Native Asyncio Web Gateway & Uptime Server](#8-native-asyncio-web-gateway--uptime-server)
-    - [9. Store Offboarding & Atomic Tenant Data Deletion](#9-store-offboarding--atomic-tenant-data-deletion)
-    - [10. Executive Daily Operations & Sales Summary PDF](#10-executive-daily-operations--sales-summary-pdf)
-    - [11. Comprehensive 184-Test Automated Test Suite](#11-comprehensive-184-test-automated-test-suite)
-11. [Tool Catalog (32 Tools)](#tool-catalog-32-tools)
-12. [Multilingual Catalog Alias Resolution Matrix](#multilingual-catalog-alias-resolution-matrix)
-13. [Database Schema & Data Architecture](#database-schema--data-architecture)
-14. [Artifact Generation Engines](#artifact-generation-engines)
-15. [4–5 Minute Demo Walkthrough Script](#45-minute-demo-walkthrough-script)
+    - [3. Store Owner Cryptographic Security PIN & Brute-Force Rate Limiting](#3-store-owner-cryptographic-security-pin--brute-force-rate-limiting)
+    - [4. Production-Grade Employee Roster & Auto-Generated IDs](#4-production-grade-employee-roster--auto-generated-ids)
+    - [5. Shift Cashier / Biller Attribution & Mandatory Pre-Payment Verification](#5-shift-cashier--biller-attribution--mandatory-pre-payment-verification)
+    - [6. Customer CRM & Lifetime Purchase Analytics](#6-customer-crm--lifetime-purchase-analytics)
+    - [7. Product Variants & Weight Disambiguation Engine](#7-product-variants--weight-disambiguation-engine)
+    - [8. Enterprise Security & Safety Guardrails Engine](#8-enterprise-security--safety-guardrails-engine)
+    - [9. Automated Cloud Backup & Instant Post-Onboarding State Vault](#9-automated-cloud-backup--instant-post-onboarding-state-vault)
+    - [10. Dynamic Store Logo Processing & Retina Resampling](#10-dynamic-store-logo-processing--retina-resampling)
+    - [11. Native Asyncio Web Gateway & Uptime Server](#11-native-asyncio-web-gateway--uptime-server)
+    - [12. Protected Store Offboarding & Password-Authorized Deletion](#12-protected-store-offboarding--password-authorized-deletion)
+    - [13. Executive Daily Operations & Sales Summary PDF](#13-executive-daily-operations--sales-summary-pdf)
+    - [14. Comprehensive 192-Test Automated Test Suite](#14-comprehensive-192-test-automated-test-suite)
+12. [Tool Catalog (36 Tools)](#tool-catalog-36-tools)
+13. [Multilingual Catalog Alias Resolution Matrix](#multilingual-catalog-alias-resolution-matrix)
+14. [Database Schema & Data Architecture](#database-schema--data-architecture)
+15. [Artifact Generation Engines](#artifact-generation-engines)
 16. [Quickstart & Deployment](#quickstart--deployment)
-17. [Automated Verification (184 Tests)](#automated-verification-184-tests)
+17. [Automated Verification (192 Tests)](#automated-verification-192-tests)
 18. [Directory Structure](#directory-structure)
 19. [Submission Info](#submission-info)
 
@@ -556,15 +577,42 @@ The assignment specification defines a single-store, single-database prototype. 
   - `manager`: Access to POS billing, stock inwarding, and Khata debt tracking.
   - `cashier`: Restricted strictly to billing carts and stock queries (wholesale costs and profit margins are masked).
 
-### 3. Customer CRM & Lifetime Purchase Analytics
+### 3. Store Owner Cryptographic Security PIN & Brute-Force Rate Limiting
+* **Module**: `src/kirana/security/password.py`
+* **The Architecture**: During initial store setup, the store owner creates a dedicated security password/PIN (minimum 4 characters).
+* **Cryptographic Rigor**:
+  - Salted `PBKDF2-HMAC-SHA256` hashing with 16-byte random salts and 100,000 hash iterations.
+  - Constant-time password verification using `secrets.compare_digest` to prevent side-channel timing attacks.
+* **Sliding-Window Rate Limiting**: In-memory rate limiter tracking failed attempts per chat. If 5 failed authorization attempts occur within a 15-minute sliding window, the system triggers an automatic lockout to protect against brute-force attacks.
+* **High-Impact Protection**: Required to authorize critical actions, including employee deletions, store account wipes, and credential rotation.
+
+### 4. Production-Grade Employee Roster & Auto-Generated IDs
+* **Modules**: `src/kirana/domain/models.py`, `src/kirana/db/repository.py`, `src/kirana/tools/employee.py`
+* **Onboarding Setup**: During initial `/start` setup, owners can configure the number of staff members and their names, or enter `skip` for solo-run stores.
+* **Auto-Generated Sequential IDs**: Automatically assigns clean alphanumeric codes (`EMP-001`, `EMP-002`, `EMP-003`...).
+* **In-Conversation Management**: Staff can be listed, added (`add_employee`), or removed (`remove_employee`) at any point in the conversation.
+* **Two-Phase Warning & Authorization**: Attempting to remove an employee triggers a structured confirmation prompt displaying the employee's details and demanding the Store Owner Security Password before deactivation.
+* **Soft-Deletion Invariant**: Employees are deactivated (`is_active = 0`, `deactivated_at = now`) rather than deleted, guaranteeing that historical tax invoices, sales reports, and audit logs (`bills.billed_by`) maintain permanent referential integrity.
+* **Natural Entity Resolution**: Lookups support integer IDs, exact employee codes (`EMP-001`), exact names, or partial/substring matches (e.g. searching "Ramesh" resolves "Ramesh Kumar").
+
+### 5. Shift Cashier / Biller Attribution & Mandatory Pre-Payment Verification
+* **Modules**: `src/kirana/tools/billing.py`, `src/kirana/agent/system_prompt.py`
+* **The Capability**: In busy kirana environments, counter staff rotate shifts. The active cashier is tracked in store preferences (`active_cashier` / `last_biller`).
+* **Pre-Payment Verification**: During checkout, before finalizing a bill, the agent presents a mandatory confirmation prompt:
+  1. Verifying if the bill is final or needs item additions, removals, or quantity edits.
+  2. Prompting for the **Store Employee / Cashier Name** (who is billing this order).
+  3. Prompting for **Customer Name & 10-digit Mobile Number** for loyalty and purchase history tracking.
+* **Invoice Attribution**: Finalized bills and PDF tax invoices permanently record the billing cashier (`billed_by`).
+
+### 6. Customer CRM & Lifetime Purchase Analytics
 * **Tool**: `customer_purchase_history(phone, name)`
 * **The Capability**: Evaluates lifetime shopping patterns for neighborhood customers — total lifetime spend, visit counts, average ticket size, preferred products, and historical itemized bills. Allows store owners to acknowledge high-value patrons instantly.
 
-### 4. Product Variants & Weight Disambiguation Engine
+### 7. Product Variants & Weight Disambiguation Engine
 * **Module**: `src/kirana/domain/variants.py`
 * **The Capability**: Automatically extracts product base names and package quantities (e.g. recognizing that "Maggi 70g" and "Maggi 140g" are sibling variants of "Maggi", or "Aashirvaad Atta 1kg" and "5kg" are packaging variants of the same brand). Enables model-driven clarification questions when customers order generically.
 
-### 5. Enterprise Security & Safety Guardrails Engine
+### 8. Enterprise Security & Safety Guardrails Engine
 * **Module**: `src/kirana/agent/guardrails.py`
 * **The Capability**: Multi-layer defense protecting the system:
   - **Prompt Injection Defense**: Intercepts jailbreak attempts, roleplay exploits, and instructions attempting to override accounting rules.
@@ -572,39 +620,40 @@ The assignment specification defines a single-store, single-database prototype. 
   - **Legal Metrology Act Enforcement**: Blocks any transaction where the selling price exceeds printed MRP ($\text{Price} \le \text{MRP}$).
   - **FSSAI Food Safety Guardrail**: Rejects inward intake or sales of products whose expiry date has passed.
 
-### 6. Automated Cloud Backup & Zero-Downtime Disaster Recovery
+### 9. Automated Cloud Backup & Instant Post-Onboarding State Vault
 * **Module**: `src/kirana/services/backup.py`
 * **The Capability**:
   - Issues `PRAGMA wal_checkpoint(TRUNCATE)` to flush journal pages to disk.
   - Compresses `master.db`, tenant databases, and uploaded logos into a unified `.zip` archive.
   - Validates archive consistency via `PRAGMA integrity_check`.
-  - Automatically dispatches encrypted snapshots to a secure Telegram cloud vault, enabling containerized instances to restore state on boot.
+  - **Instant State Snapshot**: Immediately upon store registration completion, an encrypted backup snapshot is uploaded to the Telegram Cloud Vault (`TELEGRAM_BACKUP_CHAT_ID`), ensuring that newly provisioned stores survive cloud container restarts on free ephemeral tiers.
+  - **Boot State Auto-Recovery**: If a fresh container launches with an empty disk, the bot automatically downloads the latest pinned backup from Telegram, verifies SQLite integrity, and restores all stores, inventory, bills, and khata accounts.
 
-### 7. Dynamic Store Logo Processing & Retina Resampling
+### 10. Dynamic Store Logo Processing & Retina Resampling
 * **Module**: `src/kirana/services/logo_service.py`
 * **The Capability**: Handles camera uploads of store logos. Inspects magic bytes to prevent arbitrary file upload vulnerabilities, normalizes EXIF orientation tags, preserves RGBA alpha transparency, and downsamples images to 300 DPI for sharp thermal receipt and PDF printing.
 
-### 8. Native Asyncio Web Gateway & Uptime Server
+### 11. Native Asyncio Web Gateway & Uptime Server
 * **Module**: `src/kirana/telegram/web.py`
-* **The Capability**: A non-blocking `aiohttp` web server running concurrently on port 8080 alongside the Telegram bot long-poll. Exposes `/health` and `/ping` for zero-downtime cloud hosting health checks (Render, Railway, UptimeRobot) and provides an operational JSON dashboard reporting uptime, tenant count, and memory state.
+* **The Capability**: A non-blocking asynchronous HTTP server running concurrently on port 10000 alongside the Telegram bot long-poll. Exposes `/health` and `/ping` for zero-downtime cloud hosting health checks (Render, Railway, UptimeRobot) and provides an operational JSON dashboard reporting uptime, tenant count, and memory state.
 
-### 9. Store Offboarding & Atomic Tenant Data Deletion
+### 12. Protected Store Offboarding & Password-Authorized Deletion
 * **Test Verification**: `tests/test_delete_account.py`
-* **The Capability**: Complies with India's Digital Personal Data Protection (DPDP) Act and GDPR standards. An authenticated owner can trigger permanent account deletion. The system atomically wipes the tenant's SQLite file, purges logo assets, and cleans user mappings in `master.db` inside a rollback-safe transaction.
+* **The Capability**: Complies with India's Digital Personal Data Protection (DPDP) Act and GDPR standards. An authenticated owner can trigger permanent account deletion via `/delete_account` or conversation. If a Store Owner Security Password was configured during setup, the system challenges the user for their password and verifies it with rate-limiting protection before executing the atomic purge.
 
-### 10. Executive Daily Operations & Sales Summary PDF
+### 13. Executive Daily Operations & Sales Summary PDF
 * **Module**: `src/kirana/artifacts/sales_report_pdf.py`
 * **The Capability**: In addition to individual POS invoices, the system generates an **Executive Daily Operations Report PDF** featuring revenue KPI cards, payment mode breakdowns, statutory GST collection tables, and category volume contribution charts.
 
-### 11. Comprehensive 184-Test Automated Test Suite
-* **The Coverage**: 184 tests running across 20 test modules in ~62 seconds.
-* **Test Depth**: Validates financial rounding down to the single paise, FEFO batch allocations, concurrent SQLite writer locks, OTP hashing, prompt injection defenses, and vernacular entity extraction.
+### 14. Comprehensive 192-Test Automated Test Suite
+* **The Coverage**: 192 tests running across 20 test modules in ~73 seconds (100% passing).
+* **Test Depth**: Validates financial rounding down to the single paise, FEFO batch allocations, concurrent SQLite writer locks, OTP hashing, PBKDF2 password authentication, brute-force lockouts, employee CRUD, prompt injection defenses, and vernacular entity extraction.
 
 ---
 
-## Tool Catalog (32 Tools)
+## Tool Catalog (36 Tools)
 
-The agent interacts with the supermarket database via 32 typed adapters:
+The agent interacts with the supermarket database via 36 typed adapters:
 
 ### 1. Inventory & Restocking (7 Tools)
 - `add_product(...)`: Registers a new SKU with tax, unit, pricing, and alias parameters.
@@ -615,11 +664,12 @@ The agent interacts with the supermarket database via 32 typed adapters:
 - `reorder_suggestions(target_cover_days)`: Computes replenishment quantities based on 7-day sales velocity.
 - `list_expiring(days_ahead)`: Scans perishables approaching expiry within the specified window.
 
-### 2. Point-of-Sale Billing & Carts (8 Tools)
+### 2. Point-of-Sale Billing & Carts (9 Tools)
 - `cart_add_item(name, quantity, unit)`: Adds an item to the draft cart with unit normalization.
 - `cart_update_item(name, quantity, unit)`: Modifies line-item quantities on the active draft cart.
 - `cart_remove_item(name)`: Drops a line item from the active cart.
 - `cart_view()`: Returns the live cart summary with subtotal and tax breakdowns.
+- `cart_set_biller(employee_name)`: Attributes the active bill to a specific cashier/employee.
 - `cart_set_payment(mode, reference)`: Sets payment tender (`cash`, `upi`, `card`, `credit`).
 - `cart_set_customer(name_or_phone)`: Links the bill to a customer ledger account.
 - `cart_finalize(idempotency_key)`: Commits the bill, decrements batch stock via FEFO, and issues invoice.
@@ -635,18 +685,24 @@ The agent interacts with the supermarket database via 32 typed adapters:
 ### 4. Customer CRM & History (1 Tool)
 - `customer_purchase_history(phone, name)`: Retrieves lifetime visit count, total spend, favorite items, and recent invoices.
 
-### 5. Business Analytics & Closings (5 Tools)
+### 5. Employee Management & Security (4 Tools)
+- `list_employees(active_only, include_inactive)`: Lists active or all registered store employees and cashiers.
+- `add_employee(name, role, phone)`: Registers a new employee and auto-generates the next sequential `EMP-XXX` code.
+- `remove_employee(employee_id_or_name, owner_password, confirmed)`: Soft-deletes an employee with two-phase warning and owner password authorization.
+- `change_owner_password(old_password, new_password)`: Verifies existing credentials before rotating store owner security password.
+
+### 6. Business Analytics & Closings (5 Tools)
 - `daily_summary(date)`: Computes gross revenue, margins, GST collections, and payment splits.
 - `sales_report(start_date, end_date)`: Date-range financial reporting with category breakdown.
 - `top_items(limit, period_days)`: Ranks top revenue and volume contributing SKUs.
 - `gst_collected(start_date, end_date)`: Generates statutory tax collection breakdown by GST slab.
 - `stock_health()`: Evaluates inventory turnover, total asset valuation, and dead-stock identification.
 
-### 6. Document Generation (2 Tools)
+### 7. Document Generation (2 Tools)
 - `generate_invoice_pdf(bill_id)`: Generates a branded GST tax invoice PDF with Rupee symbol.
 - `generate_analysis_deck(days)`: Compiles an 8-slide PowerPoint presentation with 4 native charts.
 
-### 7. Store Profile & Memory (4 Tools)
+### 8. Store Profile & Memory (4 Tools)
 - `set_preference(key, value)`: Durably stores store operational defaults (e.g. default payment mode).
 - `get_preferences()`: Retrieves active store configuration.
 - `set_shop_profile(name, gstin, address, phone, tagline)`: Updates business legal details.
@@ -690,6 +746,7 @@ CREATE TABLE tenants (
     gstin TEXT,
     tagline TEXT,
     db_filename TEXT UNIQUE NOT NULL,     -- store_KIR-61269.db
+    owner_pin_hash TEXT,                  -- PBKDF2-HMAC-SHA256 salted hash
     status TEXT NOT NULL DEFAULT 'active',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
@@ -722,6 +779,31 @@ CREATE TABLE auth_otps (
 ### Tenant Store Schema (`data/stores/store_{store_code}.db`)
 
 ```sql
+CREATE TABLE shop_profile (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    name TEXT NOT NULL DEFAULT '',
+    address TEXT NOT NULL DEFAULT '',
+    gstin TEXT,
+    phone TEXT,
+    tagline TEXT,
+    logo_path TEXT,
+    state_code TEXT NOT NULL DEFAULT '33',
+    invoice_prefix TEXT NOT NULL DEFAULT 'INV',
+    owner_pin_hash TEXT,                  -- Store Owner Security Password / PIN
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE employees (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    emp_code TEXT UNIQUE NOT NULL,        -- Sequential: EMP-001, EMP-002...
+    name TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'cashier', -- cashier, manager, inventory
+    phone TEXT,
+    is_active INTEGER NOT NULL DEFAULT 1, -- Soft-deletion preserves invoice audit
+    created_at TEXT NOT NULL,
+    deactivated_at TEXT
+);
+
 CREATE TABLE products (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
@@ -762,6 +844,7 @@ CREATE TABLE bills (
     total_paise INTEGER NOT NULL DEFAULT 0,
     payment_mode TEXT,                     -- cash, upi, card, credit
     payment_ref TEXT,
+    biller_name TEXT,                      -- Attributed employee / cashier name
     idempotency_key TEXT UNIQUE,
     created_at TEXT NOT NULL,
     finalized_at TEXT
@@ -811,25 +894,6 @@ CREATE TABLE khata_ledger (
   6. Category Volume Distribution: **Native editable stacked column chart**.
   7. Inventory Velocity & Restock Table: Tabular restock priority list.
   8. Strategic Recommendations: Automated retail insights generated by the model.
-
----
-
-## 4–5 Minute Demo Walkthrough Script
-
-The system includes a 4–5 minute automated walkthrough demonstrating the core operations flow. We have codified this exact sequence into an automated, repeatable walkthrough script in `scripts/demo.py`:
-
-```bash
-uv run python scripts/demo.py
-```
-
-### The Required Demo Sequence:
-1. **Receive Stock**: Inward 50 packets of Maggi 70g at ₹12 cost, ₹14 MRP $\rightarrow$ stock updates atomically.
-2. **Multi-Item Bill with Edit**: Add 2kg sugar, 1 Aashirvaad atta 5kg, 4 Maggi, 1 Amul butter $\rightarrow$ edit cart to drop butter and increase Maggi to 6 $\rightarrow$ bill recalculates dynamically.
-3. **Oversell Guard Enforcement**: Attempt to bill 500kg sugar when only 40kg is in stock $\rightarrow$ agent refuses with clear stock constraint error.
-4. **Khata Credit Cycle**: Put ₹500 on Ramesh's credit $\rightarrow$ query Ramesh's balance $\rightarrow$ record ₹300 repayment $\rightarrow$ balance confirms ₹200 remaining.
-5. **Generate PDF Invoice**: Finalize draft cart with UPI payment $\rightarrow$ generate and display branded GST-compliant tax invoice PDF.
-6. **Generate Analysis Deck**: Request sales analysis $\rightarrow$ generate and display 8-slide PowerPoint deck with 4 native charts.
-7. **Durable Memory Across Sessions**: Set preference: *"always assume UPI unless I say cash"* $\rightarrow$ issue `/new` command to wipe chat context $\rightarrow$ start new bill $\rightarrow$ verify default payment is remembered as UPI.
 
 ---
 
@@ -893,9 +957,9 @@ docker-compose up --build -d
 
 ---
 
-## Automated Verification (184 Tests)
+## Automated Verification (192 Tests)
 
-The test suite validates financial calculations, concurrency locks, FEFO allocations, multi-tenant isolation, artifact generators, and vernacular NLP:
+The test suite validates financial calculations, concurrency locks, FEFO allocations, multi-tenant isolation, artifact generators, employee CRUD, PBKDF2 password security, rate-limiting, and vernacular NLP:
 
 ```bash
 uv run pytest -v
@@ -907,30 +971,30 @@ platform win32 -- Python 3.11.9, pytest-9.1.1, pluggy-1.6.0
 rootdir: D:\projects\Supermarket-Ops-Agent
 configfile: pyproject.toml
 testpaths: tests
-collected 184 items
+collected 192 items
 
 tests\test_artifacts.py .....                                            [  2%]
 tests\test_backup_restore.py ....                                        [  4%]
 tests\test_concurrency.py ..                                             [  5%]
-tests\test_delete_account.py .......                                     [  9%]
+tests\test_delete_account.py ........                                    [  9%]
 tests\test_fefo.py .......                                               [ 13%]
 tests\test_gemini_tools.py ...                                           [ 15%]
 tests\test_gst.py ..........                                             [ 20%]
-tests\test_guardrails.py ..........................                      [ 34%]
-tests\test_idempotency.py ..                                             [ 35%]
-tests\test_logo_service.py .........                                     [ 40%]
-tests\test_money.py .....                                                [ 43%]
-tests\test_multi_tenant_auth.py .........                                [ 48%]
-tests\test_production_e2e.py ....................                        [ 59%]
-tests\test_repository.py ..........................                      [ 73%]
+tests\test_guardrails.py ..........................                      [ 33%]
+tests\test_idempotency.py ..                                             [ 34%]
+tests\test_logo_service.py .........                                     [ 39%]
+tests\test_money.py .....                                                [ 42%]
+tests\test_multi_tenant_auth.py ............                             [ 48%]
+tests\test_production_e2e.py ....................                        [ 58%]
+tests\test_repository.py ............................                    [ 73%]
 tests\test_scheduler.py ....                                             [ 75%]
 tests\test_tamil.py .....                                                [ 78%]
-tests\test_tools.py .............................                        [ 94%]
+tests\test_tools.py ...............................                      [ 94%]
 tests\test_units.py ......                                               [ 97%]
 tests\test_variants.py ....                                              [ 99%]
 tests\test_web_server.py .                                               [100%]
 
-======================= 184 passed in 95.90s (0:01:35) ========================
+======================= 192 passed in 73.84s (0:01:13) ========================
 ```
 
 ---
