@@ -20,9 +20,18 @@
 
 ## Demo Video
 
-https://github.com/user-attachments/assets/f564a845-4d20-4076-a29b-30eaaa4c1754
+<div align="center">
 
-> **🎥 Live Operations Walkthrough**: End-to-end autonomous Kirana operations demo — multi-lingual conversational billing, real-time inventory management, batch expiry tracking, voice order processing, khata credit ledgers, and automated daily report generation. *(Offline / direct repository file: [`video.mp4`](video.mp4))*
+<a href="video.mp4">
+  <img src="docs/demo_player_window.png" alt="Supermarket-Ops-Agent Live Operations Video Walkthrough" width="100%" style="max-width: 900px; border-radius: 12px; box-shadow: 0 8px 32px rgba(0,0,0,0.35);">
+</a>
+
+<p>
+  <a href="video.mp4"><b>▶️ Click the Video Window Above to Play / Download the Walkthrough (14m 15s)</b></a><br>
+  <sub><i>Demonstrating multilingual billing, FEFO inventory, Khata credit tabs, password security, and PDF generation</i></sub>
+</p>
+
+</div>
 
 ---
 
