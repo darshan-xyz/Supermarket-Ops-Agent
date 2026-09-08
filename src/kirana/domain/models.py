@@ -49,6 +49,22 @@ class Product:
 
 
 @dataclass
+class Employee:
+    id: int
+    emp_code: str
+    name: str
+    role: str = "cashier"
+    phone: str | None = None
+    is_active: bool = True
+    created_at: str = ""
+    deactivated_at: str | None = None
+
+    def display(self) -> str:
+        status = "" if self.is_active else " (Deactivated)"
+        return f"{self.emp_code}: {self.name} [{self.role.title()}]{status}"
+
+
+@dataclass
 class StockInfo:
     product: Product
     stock_display: str
@@ -116,6 +132,7 @@ class CartView:
     warnings: list[str] = field(default_factory=list)
     biller_name: str | None = None
     customer_phone: str | None = None
+    biller_confirmed: bool = False
 
 
 @dataclass
@@ -277,4 +294,5 @@ class ShopProfile:
     state_code: str
     invoice_prefix: str
     logo_path: str | None = None
+    owner_pin_hash: str | None = None
 

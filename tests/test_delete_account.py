@@ -373,3 +373,80 @@ async def test_telegram_text_delete_account_and_confirm(isolated_registry, monke
     assert "Store & Account Successfully Deleted" in msg2.reply_text.call_args[0][0]
 
 
+@pytest.mark.asyncio
+async def test_telegram_delete_account_requires_owner_password(isolated_registry, monkeypatch):
+    """Verify that when an owner PIN is configured, deletion strictly requires owner PIN verification."""
+    from unittest.mock import AsyncMock, MagicMock
+    import kirana.telegram.bot as bot_module
+    from kirana.security.password import hash_password
+
+    reg, _ = isolated_registry
+    monkeypatch.setattr(bot_module, "get_master_registry", lambda: reg)
+
+    pin_hash = hash_password("SuperSecretPIN#42")
+    tenant = reg.register_tenant(
+        store_name="Protected Mart",
+        owner_name="Dinesh",
+        phone_e164="+919876540004",
+        address="4 Shield Road",
+        owner_pin_hash=pin_hash,
+    )
+    chat_id = 55504
+    reg.link_chat_to_tenant(chat_id=chat_id, user_id=4, tenant_id=tenant.id)
+
+    # 1. User taps confirm button
+    cb_msg = MagicMock()
+    cb_msg.reply_text = AsyncMock()
+    query = MagicMock()
+    query.data = f"del_acc:confirm:{tenant.store_code}"
+    query.answer = AsyncMock()
+    query.edit_message_reply_markup = AsyncMock()
+    query.message = cb_msg
+
+    context = MagicMock()
+    context.chat_data = {"awaiting_delete_confirm": tenant.store_code}
+
+    cb_update = MagicMock()
+    cb_update.callback_query = query
+    cb_update.effective_chat.id = chat_id
+
+    await bot_module._delete_account_callback(cb_update, context)
+
+    # Bot must NOT delete the store yet; must challenge for PIN
+    assert reg.get_tenant_for_chat(chat_id) is not None
+    assert context.chat_data.get("awaiting_delete_pin") == tenant.store_code
+    assert "Store Owner Security PIN Required" in cb_msg.reply_text.call_args[0][0]
+
+    # 2. User enters incorrect PIN
+    msg_bad = MagicMock()
+    msg_bad.text = "wrong_pin"
+    msg_bad.reply_text = AsyncMock()
+    up_bad = MagicMock()
+    up_bad.message = msg_bad
+    up_bad.effective_chat.id = chat_id
+
+    await bot_module._message(up_bad, context)
+
+    # Rejected and store still exists
+    assert reg.get_tenant_for_chat(chat_id) is not None
+    assert "Incorrect Store Owner Security PIN" in msg_bad.reply_text.call_args[0][0]
+    assert context.chat_data.get("awaiting_delete_pin") == tenant.store_code
+
+    # 3. User enters correct PIN
+    msg_good = MagicMock()
+    msg_good.text = "SuperSecretPIN#42"
+    msg_good.reply_text = AsyncMock()
+    up_good = MagicMock()
+    up_good.message = msg_good
+    up_good.effective_chat.id = chat_id
+
+    await bot_module._message(up_good, context)
+
+    # Successfully deleted!
+    assert reg.get_tenant_for_chat(chat_id) is None
+    assert reg.get_tenant_by_code(tenant.store_code) is None
+    assert msg_good.reply_text.called
+    assert "Store & Account Successfully Deleted" in msg_good.reply_text.call_args[0][0]
+
+
+

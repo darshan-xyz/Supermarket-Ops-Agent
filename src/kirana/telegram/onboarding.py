@@ -35,10 +35,21 @@ from ..config import PROJECT_ROOT
 from ..db.master import MasterRegistry, get_master_registry, normalize_phone
 from ..domain.money import format_inr
 from ..domain.units import format_qty
+from ..security.password import hash_password
 from ..services.logo_service import validate_and_process_logo
 
 logger = logging.getLogger("kirana.onboarding")
 
+
+def _parse_employee_names(text: str) -> list[str]:
+    """Extract individual employee names from freeform text input."""
+    parts = re.split(r"[,;\n\r]+|\b(?:and|மற்றும்|और)\b|[&+]", text, flags=re.IGNORECASE)
+    names: list[str] = []
+    for p in parts:
+        cleaned = re.sub(r"^[\s\d\.\-\)\*:]+", "", p).strip()
+        if cleaned and len(cleaned) >= 2 and cleaned.lower() not in ("skip", "none", "employee", "employees"):
+            names.append(cleaned)
+    return names
 
 
 def normalize_lang(val: str | None) -> str:
@@ -94,6 +105,9 @@ class OnboardingStep(str, Enum):
     AWAITING_OTP = "awaiting_otp"
     AWAITING_STORE_NAME = "awaiting_store_name"
     AWAITING_OWNER_NAME = "awaiting_owner_name"
+    AWAITING_OWNER_PASSWORD = "awaiting_owner_password"
+    AWAITING_EMPLOYEE_COUNT = "awaiting_employee_count"
+    AWAITING_EMPLOYEE_NAMES = "awaiting_employee_names"
     AWAITING_ADDRESS = "awaiting_address"
     AWAITING_GSTIN = "awaiting_gstin"
     AWAITING_LOGO = "awaiting_logo"
@@ -108,6 +122,9 @@ class OnboardingState:
     phone_e164: str = ""
     store_name: str = ""
     owner_name: str = ""
+    owner_pin_hash: str | None = None
+    target_employee_count: int = 0
+    employees: list[dict[str, Any]] = field(default_factory=list)
     address: str = ""
     gstin: str | None = None
     logo_path: str | None = None
@@ -443,26 +460,217 @@ async def handle_onboarding_step(
             await msg.reply_text("Please enter a valid owner name.")
             return True
         state.owner_name = owner_name
-        state.step = OnboardingStep.AWAITING_ADDRESS
+        state.step = OnboardingStep.AWAITING_OWNER_PASSWORD
 
         texts = {
             "ta": (
                 f"👤 உரிமையாளர்: <b>{owner_name}</b>\n\n"
+                "🔐 <b>உரிமையாளர் பாதுகாப்பு PIN / கடவுச்சொல்:</b>\n\n"
+                "ஒரு பாதுகாப்பான 4-12 இலக்க PIN அல்லது கடவுச்சொல்லை உள்ளிடவும்.\n"
+                "<i>(பணியாளர்களை நீக்குதல், கணக்கை நீக்குதல் போன்ற முக்கிய செயல்பாடுகளை அங்கீகரிக்க இது தேவைப்படும்.)</i>\n\n"
+                "👉 <b>உங்கள் பாதுகாப்பு PIN அல்லது கடவுச்சொல்லை தட்டச்சு செய்யவும்:</b>"
+            ),
+            "hi": (
+                f"👤 मालिक: <b>{owner_name}</b>\n\n"
+                "🔐 <b>स्टोर मालिक सुरक्षा पिन / पासवर्ड सेट करें:</b>\n\n"
+                "एक सुरक्षित 4 से 12 अंकों का पिन या पासवर्ड दर्ज करें।\n"
+                "<i>(कर्मचारियों को हटाने या महत्वपूर्ण गतिविधियों को अधिकृत करने के लिए यह पिन आवश्यक होगा।)</i>\n\n"
+                "👉 <b>अपना सुरक्षा पिन या पासवर्ड दर्ज करें:</b>"
+            ),
+            "en": (
+                f"👤 Owner: <b>{owner_name}</b>\n\n"
+                "🔐 <b>Set Store Owner Security PIN / Password:</b>\n\n"
+                "Create a secure 4 to 12 digit PIN or password.\n"
+                "<i>(This will be required to authorize critical actions like deleting employees, resetting store data, or sensitive operations.)</i>\n\n"
+                "👉 <b>Enter your security PIN or password:</b>"
+            ),
+        }
+        await msg.reply_text(texts.get(lang, texts["en"]), parse_mode=ParseMode.HTML)
+        return True
+
+    # --- Step 4b: Awaiting Owner Password ---
+    if state.step == OnboardingStep.AWAITING_OWNER_PASSWORD:
+        pin = (msg.text or "").strip()
+        if len(pin) < 4:
+            err = {
+                "ta": "⚠️ கடவுச்சொல்/PIN குறைந்தபட்சம் 4 எழுத்துக்கள் அல்லது இலக்கங்கள் கொண்டிருக்க வேண்டும். தயவுசெய்து பாதுகாப்பான PIN-ஐ உள்ளிடவும்.",
+                "hi": "⚠️ सुरक्षा पिन/पासवर्ड कम से कम 4 अक्षरों या अंकों का होना चाहिए। कृपया सुरक्षित पिन दर्ज करें।",
+                "en": "⚠️ Security PIN/Password must be at least 4 characters long. Please enter a secure PIN or password (min 4 chars).",
+            }
+            await msg.reply_text(err.get(lang, err["en"]))
+            return True
+
+        state.owner_pin_hash = hash_password(pin)
+        state.step = OnboardingStep.AWAITING_EMPLOYEE_COUNT
+
+        texts = {
+            "ta": (
+                "🔒 <b>பாதுகாப்பு PIN வெற்றிகரமாக அமைக்கப்பட்டது!</b>\n\n"
+                "👥 <b>கடை பணியாளர்கள் & ஊழியர்கள்:</b>\n\n"
+                "உங்கள் கடையில் எத்தனை ஊழியர்கள்/காசாளர்கள் பணிபுரிகிறார்கள்?\n"
+                "<i>(பில்லிங்கிற்காக EMP-001, EMP-002 போன்ற தனித்துவமான பணியாளர் குறியீடுகள் உருவாக்கப்படும்.)</i>\n\n"
+                "👉 ஊழியர்களின் <b>எண்ணிக்கையை</b> உள்ளிடவும் (எ.கா: <code>2</code>), அல்லது தனியாக நிர்வகித்தால் <b>'0'</b> / <b>'skip'</b> என அனுப்பவும்."
+            ),
+            "hi": (
+                "🔒 <b>सुरक्षा पिन सफलतापूर्वक सेट हो गया!</b>\n\n"
+                "👥 <b>स्टोर कर्मचारी व कैशियर:</b>\n\n"
+                "आपके स्टोर में कितने कर्मचारी या कैशियर काम करते हैं?\n"
+                "<i>(बिलिंग के लिए EMP-001, EMP-002 जैसी विशिष्ट आईडी बनाई जाएगी।)</i>\n\n"
+                "👉 कर्मचारियों की <b>संख्या</b> दर्ज करें (उदा: <code>2</code>), या यदि आप अकेले स्टोर चलाते हैं तो <b>'0'</b> या <b>'skip'</b> टाइप करें।"
+            ),
+            "en": (
+                "🔒 <b>Security PIN set successfully!</b>\n\n"
+                "👥 <b>Store Staff & Employees:</b>\n\n"
+                "How many employees or cashiers work at your store?\n"
+                "<i>(We will generate unique Employee IDs like EMP-001, EMP-002 for billing attribution.)</i>\n\n"
+                "👉 Enter the <b>number of employees</b> (e.g., <code>2</code>), or type <b>'skip'</b> / <b>'0'</b> if you manage the store alone."
+            ),
+        }
+        await msg.reply_text(texts.get(lang, texts["en"]), parse_mode=ParseMode.HTML)
+        return True
+
+    # --- Step 4c: Awaiting Employee Count ---
+    if state.step == OnboardingStep.AWAITING_EMPLOYEE_COUNT:
+        raw = (msg.text or "").strip()
+        lowered = raw.lower()
+
+        # Option A: Skip or 0
+        if lowered in ("0", "skip", "none", "no", "illai", "இல்லை", "nahi", "नहीं", "-"):
+            state.employees = []
+            state.step = OnboardingStep.AWAITING_ADDRESS
+            addr_texts = {
+                "ta": (
+                    "ℹ️ பணியாளர்கள் பதிவு தவிர்க்கப்பட்டது (பின்னரும் நீங்கள் பணியாளர்களைச் சேர்க்கலாம்).\n\n"
+                    "📍 <b>கடையின் முகவரி & ஊர் என்ன?</b>\n"
+                    "<i>(ரசீது மற்றும் பில்லிங்கில் அச்சிடப்படும். எ.கா: 12/4 காந்தி ரோடு, மதுரை)</i>"
+                ),
+                "hi": (
+                    "ℹ️ कर्मचारी पंजीकरण छोड़ दिया गया (आप बाद में भी कर्मचारी जोड़ सकते हैं)।\n\n"
+                    "📍 <b>स्टोर का पता व शहर क्या है?</b>\n"
+                    "<i>(बिल व टैक्स इनवॉइस पर प्रिंट होगा। उदा: 12/4 गांधी रोड, जयपुर)</i>"
+                ),
+                "en": (
+                    "ℹ️ Staff registration skipped (you can add employees anytime later via chat).\n\n"
+                    "📍 <b>What is the Store Address & City?</b>\n"
+                    "<i>(This will appear on GST invoices & receipts. e.g., 12/4 Gandhi Road, Chennai)</i>"
+                ),
+            }
+            await msg.reply_text(addr_texts.get(lang, addr_texts["en"]), parse_mode=ParseMode.HTML)
+            return True
+
+        # Option B: Directly typed names (e.g. "Ramesh, Priya")
+        parsed_names = _parse_employee_names(raw)
+        if not raw.isdigit() and len(parsed_names) >= 1:
+            state.employees = []
+            for i, name in enumerate(parsed_names, 1):
+                state.employees.append({
+                    "emp_code": f"EMP-{i:03d}",
+                    "name": name,
+                    "role": "cashier",
+                    "phone": None,
+                })
+            state.step = OnboardingStep.AWAITING_ADDRESS
+            emp_lines = "\n".join(f"• <b>{e['emp_code']}</b>: {e['name']} (Cashier)" for e in state.employees)
+            confirm_texts = {
+                "ta": (
+                    f"✅ <b>{len(state.employees)} பணியாளர்கள் பதிவு செய்யப்பட்டனர்:</b>\n{emp_lines}\n\n"
+                    "📍 <b>கடையின் முகவரி & ஊர் என்ன?</b>\n"
+                    "<i>(ரசீது மற்றும் பில்லிங்கில் அச்சிடப்படும். எ.கா: 12/4 காந்தி ரோடு, மதுரை)</i>"
+                ),
+                "hi": (
+                    f"✅ <b>{len(state.employees)} कर्मचारी सफलतापूर्वक जोड़े गए:</b>\n{emp_lines}\n\n"
+                    "📍 <b>स्टोर का पता व शहर क्या है?</b>\n"
+                    "<i>(बिल व टैक्स इनवॉइस पर प्रिंट होगा। उदा: 12/4 गांधी रोड, जयपुर)</i>"
+                ),
+                "en": (
+                    f"✅ <b>{len(state.employees)} Employee(s) Registered:</b>\n{emp_lines}\n\n"
+                    "📍 <b>What is the Store Address & City?</b>\n"
+                    "<i>(This will appear on GST invoices & receipts. e.g., 12/4 Gandhi Road, Chennai)</i>"
+                ),
+            }
+            await msg.reply_text(confirm_texts.get(lang, confirm_texts["en"]), parse_mode=ParseMode.HTML)
+            return True
+
+        # Option C: Count specified
+        try:
+            count = int(re.sub(r"\D", "", raw))
+        except (ValueError, TypeError):
+            count = -1
+
+        if count <= 0 or count > 50:
+            err = {
+                "ta": "⚠️ தயவுசெய்து சரியான பணியாளர்களின் எண்ணிக்கையை உள்ளிடவும் (1-50), அல்லது '0'/'skip' என அனுப்பவும்.",
+                "hi": "⚠️ कृपया कर्मचारियों की सही संख्या दर्ज करें (1-50), या '0'/'skip' टाइप करें।",
+                "en": "⚠️ Please enter a valid number of employees (1-50), or type 'skip' / '0'.",
+            }
+            await msg.reply_text(err.get(lang, err["en"]))
+            return True
+
+        state.target_employee_count = count
+        state.step = OnboardingStep.AWAITING_EMPLOYEE_NAMES
+
+        prompt_names = {
+            "ta": (
+                f"👥 <b>{count} பணியாளர்களின் பெயர்களை உள்ளிடவும்:</b>\n\n"
+                f"பணியாளர்களின் பெயர்களை கமா (,) அல்லது புதிய வரியில் பிரித்து அனுப்பவும்:\n"
+                f"<i>(எ.கா: ரமேஷ், பிரியா)</i>"
+            ),
+            "hi": (
+                f"👥 <b>{count} कर्मचारियों के नाम दर्ज करें:</b>\n\n"
+                f"कृपया कर्मचारियों के नाम कॉमा (,) या नई लाइन में लिखकर भेजें:\n"
+                f"<i>(उदा: रमेश, प्रिया)</i>"
+            ),
+            "en": (
+                f"👥 <b>Enter Names for {count} Employee(s):</b>\n\n"
+                f"Please enter their names separated by commas or on new lines:\n"
+                f"<i>(e.g., Ramesh, Priya)</i>"
+            ),
+        }
+        await msg.reply_text(prompt_names.get(lang, prompt_names["en"]), parse_mode=ParseMode.HTML)
+        return True
+
+    # --- Step 4d: Awaiting Employee Names ---
+    if state.step == OnboardingStep.AWAITING_EMPLOYEE_NAMES:
+        raw = (msg.text or "").strip()
+        names = _parse_employee_names(raw)
+        if not names:
+            err = {
+                "ta": "⚠️ தயவுசெய்து குறைந்தபட்சம் ஒரு பணியாளரின் பெயரை உள்ளிடவும், அல்லது 'skip' என அனுப்பவும்.",
+                "hi": "⚠️ कृपया कम से कम एक कर्मचारी का नाम दर्ज करें, या 'skip' टाइप करें।",
+                "en": "⚠️ Please enter at least one employee name, or type 'skip'.",
+            }
+            await msg.reply_text(err.get(lang, err["en"]))
+            return True
+
+        state.employees = []
+        for i, name in enumerate(names, 1):
+            state.employees.append({
+                "emp_code": f"EMP-{i:03d}",
+                "name": name,
+                "role": "cashier",
+                "phone": None,
+            })
+
+        state.step = OnboardingStep.AWAITING_ADDRESS
+        emp_lines = "\n".join(f"• <b>{e['emp_code']}</b>: {e['name']} (Cashier)" for e in state.employees)
+        confirm_texts = {
+            "ta": (
+                f"✅ <b>{len(state.employees)} பணியாளர்கள் பதிவு செய்யப்பட்டனர்:</b>\n{emp_lines}\n\n"
                 "📍 <b>கடையின் முகவரி & ஊர் என்ன?</b>\n"
                 "<i>(ரசீது மற்றும் பில்லிங்கில் அச்சிடப்படும். எ.கா: 12/4 காந்தி ரோடு, மதுரை)</i>"
             ),
             "hi": (
-                f"👤 मालिक: <b>{owner_name}</b>\n\n"
+                f"✅ <b>{len(state.employees)} कर्मचारी सफलतापूर्वक जोड़े गए:</b>\n{emp_lines}\n\n"
                 "📍 <b>स्टोर का पता व शहर क्या है?</b>\n"
                 "<i>(बिल व टैक्स इनवॉइस पर प्रिंट होगा। उदा: 12/4 गांधी रोड, जयपुर)</i>"
             ),
             "en": (
-                f"👤 Owner: <b>{owner_name}</b>\n\n"
+                f"✅ <b>{len(state.employees)} Employee(s) Registered:</b>\n{emp_lines}\n\n"
                 "📍 <b>What is the Store Address & City?</b>\n"
                 "<i>(This will appear on GST invoices & receipts. e.g., 12/4 Gandhi Road, Chennai)</i>"
             ),
         }
-        await msg.reply_text(texts.get(lang, texts["en"]), parse_mode=ParseMode.HTML)
+        await msg.reply_text(confirm_texts.get(lang, confirm_texts["en"]), parse_mode=ParseMode.HTML)
         return True
 
     # --- Step 5: Awaiting Address ---
@@ -665,6 +873,8 @@ async def handle_onboarding_step(
             tagline=f"Welcome to {state.store_name}!",
             logo_path=state.logo_path,
             preferred_language=lang,
+            owner_pin_hash=state.owner_pin_hash,
+            employees=state.employees,
         )
 
         # Link chat to newly created tenant
@@ -683,6 +893,15 @@ async def handle_onboarding_step(
         logo_line_hi = "🖼️ <b>लोगो:</b> सेट हो गया ✅\n" if state.logo_path else ""
         logo_line_en = "🖼️ <b>Store Logo:</b> Configured & Ready ✅\n" if state.logo_path else ""
 
+        emp_summary_ta = ""
+        emp_summary_hi = ""
+        emp_summary_en = ""
+        if state.employees:
+            emp_list_str = ", ".join(f"<code>{e['emp_code']}</code> {e['name']}" for e in state.employees)
+            emp_summary_ta = f"👥 <b>பணியாளர்கள்:</b> {emp_list_str}\n"
+            emp_summary_hi = f"👥 <b>कर्मचारी:</b> {emp_list_str}\n"
+            emp_summary_en = f"👥 <b>Staff:</b> {emp_list_str}\n"
+
         # Celebratory completion message with quickstart commands
         congrats = {
             "ta": (
@@ -693,6 +912,7 @@ async def handle_onboarding_step(
                 f"📍 <b>முகவரி:</b> {tenant.address}\n"
                 f"{gstin_line}"
                 f"{logo_line}"
+                f"{emp_summary_ta}"
                 f"💾 <i>தனிப்பட்ட தரவுத்தளம் (Isolated Database) தயாராக உள்ளது.</i>\n\n"
                 "<b>இப்போது நீங்கள் தொடங்கலாம்:</b>\n"
                 "• <b>பில்லிங்</b>: <i>\"2 கிலோ சர்க்கரை, 1 மேகி, UPI பில் போடு\"</i>\n"
@@ -708,6 +928,7 @@ async def handle_onboarding_step(
                 f"📍 <b>पता:</b> {tenant.address}\n"
                 f"{gstin_line}"
                 f"{logo_line_hi}"
+                f"{emp_summary_hi}"
                 f"💾 <i>आपका व्यक्तिगत डेटाबेस सुरक्षित रूप से तैयार है।</i>\n\n"
                 "<b>आप तुरंत शुरू कर सकते हैं:</b>\n"
                 "• <b>बिल बनाएं</b>: <i>\"2 किलो चीनी, 1 आशीर्वाद आटा, UPI बिल बनाओ\"</i>\n"
@@ -723,6 +944,7 @@ async def handle_onboarding_step(
                 f"📍 <b>Address:</b> {tenant.address}\n"
                 f"{gstin_line}"
                 f"{logo_line_en}"
+                f"{emp_summary_en}"
                 f"💾 <i>Dedicated store database provisioned & isolated.</i>\n\n"
                 "<b>You can start right away:</b>\n"
                 "• <b>Billing</b>: <i>\"2kg sugar, 1 Aashirvaad atta 5kg, UPI\"</i>\n"

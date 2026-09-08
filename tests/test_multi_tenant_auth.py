@@ -365,8 +365,19 @@ async def test_onboarding_questionnaire_with_logo_step(master_reg: MasterRegistr
     # 2. Owner Name
     up, msg = _make_update(text="Kavitha S")
     await handle_onboarding_step(up, None, registry=master_reg)
-    assert state.step == OnboardingStep.AWAITING_ADDRESS
+    assert state.step == OnboardingStep.AWAITING_OWNER_PASSWORD
     assert state.owner_name == "Kavitha S"
+
+    # 2b. Owner PIN / Password
+    up, msg = _make_update(text="pass1234")
+    await handle_onboarding_step(up, None, registry=master_reg)
+    assert state.step == OnboardingStep.AWAITING_EMPLOYEE_COUNT
+    assert state.owner_pin_hash is not None
+
+    # 2c. Employee Count (skip)
+    up, msg = _make_update(text="skip")
+    await handle_onboarding_step(up, None, registry=master_reg)
+    assert state.step == OnboardingStep.AWAITING_ADDRESS
 
     # 3. Address
     up, msg = _make_update(text="42 Main Bazaar, Madurai")
@@ -525,6 +536,136 @@ async def test_onboarding_cancel_and_delete_interceptors(master_reg: MasterRegis
     assert handled is True
     assert get_onboarding_session(chat_id) is None
     assert "Store registration cancelled" in msg.reply_text.call_args[0][0]
+
+
+@pytest.mark.asyncio
+async def test_onboarding_with_password_and_multiple_employees(master_reg: MasterRegistry):
+    """Verify onboarding owner password creation and employee registration with auto-generated EMP codes."""
+    from unittest.mock import AsyncMock, MagicMock
+    from kirana.telegram.onboarding import (
+        start_onboarding,
+        clear_onboarding_session,
+        handle_onboarding_step,
+        OnboardingStep,
+    )
+    import io
+    from PIL import Image as PILImg
+
+    chat_id = 99991
+    user_id = 88881
+    clear_onboarding_session(chat_id)
+    state = start_onboarding(chat_id, user_id, language="en", step=OnboardingStep.AWAITING_STORE_NAME)
+    state.phone_e164 = "+919876543299"
+
+    def _make_update(text=None, photo=None):
+        msg = MagicMock()
+        msg.text = text
+        msg.photo = photo
+        msg.document = None
+        msg.voice = None
+        msg.audio = None
+        msg.video = None
+        msg.video_note = None
+        msg.contact = None
+        msg.reply_text = AsyncMock()
+        up = MagicMock()
+        up.effective_chat.id = chat_id
+        up.effective_user.id = user_id
+        up.message = msg
+        return up, msg
+
+    # 1. Store Name
+    up, msg = _make_update(text="Mega Kirana Mart")
+    await handle_onboarding_step(up, None, registry=master_reg)
+    assert state.step == OnboardingStep.AWAITING_OWNER_NAME
+
+    # 2. Owner Name
+    up, msg = _make_update(text="Rajesh Sharma")
+    await handle_onboarding_step(up, None, registry=master_reg)
+    assert state.step == OnboardingStep.AWAITING_OWNER_PASSWORD
+    assert "PIN / Password" in msg.reply_text.call_args[0][0]
+
+    # 3. Short password rejected
+    up, msg = _make_update(text="12")
+    await handle_onboarding_step(up, None, registry=master_reg)
+    assert state.step == OnboardingStep.AWAITING_OWNER_PASSWORD
+    assert "at least 4 characters" in msg.reply_text.call_args[0][0]
+
+    # 4. Valid password accepted
+    up, msg = _make_update(text="StoreOwner#2026")
+    await handle_onboarding_step(up, None, registry=master_reg)
+    assert state.step == OnboardingStep.AWAITING_EMPLOYEE_COUNT
+    assert state.owner_pin_hash is not None
+
+    # 5. Enter employee count: 2
+    up, msg = _make_update(text="2")
+    await handle_onboarding_step(up, None, registry=master_reg)
+    assert state.step == OnboardingStep.AWAITING_EMPLOYEE_NAMES
+    assert state.target_employee_count == 2
+    assert "Enter Names for 2 Employee(s)" in msg.reply_text.call_args[0][0]
+
+    # 6. Enter employee names: "Ramesh, Priya"
+    up, msg = _make_update(text="Ramesh, Priya")
+    await handle_onboarding_step(up, None, registry=master_reg)
+    assert state.step == OnboardingStep.AWAITING_ADDRESS
+    assert len(state.employees) == 2
+    assert state.employees[0]["emp_code"] == "EMP-001"
+    assert state.employees[0]["name"] == "Ramesh"
+    assert state.employees[1]["emp_code"] == "EMP-002"
+    assert state.employees[1]["name"] == "Priya"
+    assert "EMP-001" in msg.reply_text.call_args[0][0]
+    assert "EMP-002" in msg.reply_text.call_args[0][0]
+
+    # 7. Address
+    up, msg = _make_update(text="10 Nehru Street, Delhi")
+    await handle_onboarding_step(up, None, registry=master_reg)
+    assert state.step == OnboardingStep.AWAITING_GSTIN
+
+    # 8. GSTIN
+    up, msg = _make_update(text="skip")
+    await handle_onboarding_step(up, None, registry=master_reg)
+    assert state.step == OnboardingStep.AWAITING_LOGO
+
+    mock_file = AsyncMock()
+    buf = io.BytesIO()
+    PILImg.new("RGB", (80, 80), color="blue").save(buf, format="PNG")
+    test_blue_bytes = buf.getvalue()
+
+    async def _mock_dl(out):
+        out.write(test_blue_bytes)
+
+    mock_file.download_to_memory = _mock_dl
+    context = MagicMock()
+    context.bot.get_file = AsyncMock(return_value=mock_file)
+    photo_item = MagicMock()
+    photo_item.file_id = "logo_blue_id"
+    up, msg = _make_update(photo=[photo_item])
+
+    await handle_onboarding_step(up, context, registry=master_reg)
+    tenant = master_reg.get_tenant_for_chat(chat_id)
+    assert tenant is not None
+    assert tenant.owner_pin_hash is not None
+
+    # Check store repository employees
+    repo = master_reg.get_store_repo(tenant.store_code)
+    assert repo.has_owner_password() is True
+    assert repo.verify_owner_password("StoreOwner#2026") is True
+    assert repo.verify_owner_password("wrongpass") is False
+
+    employees = repo.list_employees()
+    assert len(employees) == 2
+    assert employees[0].emp_code == "EMP-001"
+    assert employees[0].name == "Ramesh"
+    assert employees[1].emp_code == "EMP-002"
+    assert employees[1].name == "Priya"
+
+    # Verify billing resolves employee code
+    cart_view = repo.cart_set_biller(chat_id, "EMP-001")
+    assert cart_view.biller_name == "Ramesh"
+    assert cart_view.biller_confirmed is True
+
+    clear_onboarding_session(chat_id)
+
 
 
 

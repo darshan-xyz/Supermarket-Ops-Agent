@@ -36,8 +36,9 @@ from ..domain.models import (
     Customer,
     CustomerHistory,
     CustomerPurchaseItem,
-    ExpiringBatch,
     DailyReport,
+    Employee,
+    ExpiringBatch,
     GstReport,
     ItemSales,
     KhataEntry,
@@ -50,6 +51,7 @@ from ..domain.models import (
     StockInfo,
 )
 from ..domain.units import format_qty, normalize_unit, to_base
+from ..security import hash_password, verify_password
 from .connection import Database, now_iso, today_iso
 
 VALID_PAYMENT_MODES = ("cash", "upi", "card", "khata")
@@ -150,14 +152,44 @@ class Repository:
                 c.execute("ALTER TABLE customers ADD COLUMN phone TEXT")
             c.execute("CREATE INDEX IF NOT EXISTS idx_customers_phone ON customers(phone)")
 
-            # Ensure logo_path exists on shop_profile for legacy databases
+            # Ensure logo_path and owner_pin_hash exist on shop_profile for legacy databases
             prof_cols = [col["name"] for col in c.execute("PRAGMA table_info(shop_profile)").fetchall()]
             if "logo_path" not in prof_cols:
                 c.execute("ALTER TABLE shop_profile ADD COLUMN logo_path TEXT")
+            if "owner_pin_hash" not in prof_cols:
+                c.execute("ALTER TABLE shop_profile ADD COLUMN owner_pin_hash TEXT")
+
+            # Ensure employees table exists for legacy databases
+            c.execute("""CREATE TABLE IF NOT EXISTS employees (
+              id             INTEGER PRIMARY KEY AUTOINCREMENT,
+              emp_code       TEXT UNIQUE NOT NULL,
+              name           TEXT NOT NULL,
+              role           TEXT NOT NULL DEFAULT 'cashier',
+              phone          TEXT,
+              is_active      INTEGER NOT NULL DEFAULT 1,
+              created_at     TEXT NOT NULL,
+              deactivated_at TEXT
+            )""")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_employees_code ON employees(emp_code)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_employees_name ON employees(name COLLATE NOCASE)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_employees_active ON employees(is_active)")
 
     # ------------------------------------------------------------------ #
     # Row -> dataclass mappers
     # ------------------------------------------------------------------ #
+    @staticmethod
+    def _employee_from_row(r: sqlite3.Row) -> Employee:
+        return Employee(
+            id=r["id"],
+            emp_code=r["emp_code"],
+            name=r["name"],
+            role=r["role"] if "role" in r.keys() and r["role"] else "cashier",
+            phone=r["phone"] if "phone" in r.keys() else None,
+            is_active=bool(r["is_active"]),
+            created_at=r["created_at"],
+            deactivated_at=r["deactivated_at"] if "deactivated_at" in r.keys() else None,
+        )
+
     @staticmethod
     def _product(r: sqlite3.Row) -> Product:
         return Product(
@@ -555,11 +587,10 @@ class Repository:
             "SELECT * FROM bills WHERE chat_id=? AND status='draft' "
             "ORDER BY id DESC LIMIT 1", (chat_id,))
         if r is None:
-            default_biller = self.get_preference("active_cashier") or self.get_preference("last_biller")
             with self.db.transaction() as c:
                 cur = c.execute(
-                    "INSERT INTO bills (chat_id, status, billed_by, created_at) VALUES (?, 'draft', ?, ?)",
-                    (chat_id, default_biller, now_iso()))
+                    "INSERT INTO bills (chat_id, status, billed_by, created_at) VALUES (?, 'draft', NULL, ?)",
+                    (chat_id, now_iso()))
                 bid = cur.lastrowid
             r = self.db.query_one("SELECT * FROM bills WHERE id=?", (bid,))
         return self._bill_from_row(r)
@@ -648,11 +679,15 @@ class Repository:
         return self.cart_view(chat_id)
 
     def cart_set_biller(self, chat_id: int, employee_name: str) -> CartView:
-        employee_name = sanitize_employee_name(employee_name)
+        matched = self.get_employee(employee_name, active_only=True)
+        if matched:
+            display_name = matched.name
+        else:
+            display_name = sanitize_employee_name(employee_name)
         bill = self.cart_get_or_create(chat_id)
         with self.db.transaction() as c:
-            c.execute("UPDATE bills SET billed_by=? WHERE id=?", (employee_name, bill.id))
-        self.set_preference("active_cashier", employee_name)
+            c.execute("UPDATE bills SET billed_by=? WHERE id=?", (display_name, bill.id))
+        self.set_preference("active_cashier", display_name)
         return self.cart_view(chat_id)
 
     def cart_set_customer(self, chat_id: int, customer_name: str, phone: str | None = None) -> CartView:
@@ -699,6 +734,7 @@ class Repository:
             taxes.append(gst.LineTax(ir["gst_rate"], ir["line_total_paise"],
                                      ir["taxable_paise"], ir["cgst_paise"], ir["sgst_paise"]))
         totals = gst.summarize(taxes)
+        biller_confirmed = bool(bill.biller_name)
         active_biller = bill.biller_name or self.get_preference("active_cashier") or self.get_preference("last_biller")
         return CartView(
             bill_id=bill.id, chat_id=chat_id, status=bill.status,
@@ -708,6 +744,7 @@ class Repository:
             sgst_paise=totals.sgst_paise, round_off_paise=totals.round_off_paise,
             grand_total_paise=totals.grand_total_paise, warnings=warnings,
             biller_name=active_biller, customer_phone=bill.customer_phone,
+            biller_confirmed=biller_confirmed,
         )
 
     def finalize_bill(self, chat_id: int, idempotency_key: str,
@@ -1270,14 +1307,16 @@ class Repository:
     def get_shop_profile(self) -> ShopProfile:
         r = self.db.query_one("SELECT * FROM shop_profile WHERE id=1")
         if not r:
-            return ShopProfile(name=None, gstin=None, address=None, phone=None, state_code="29", invoice_prefix="INV", logo_path=None)
+            return ShopProfile(name=None, gstin=None, address=None, phone=None, state_code="29", invoice_prefix="INV", logo_path=None, owner_pin_hash=None)
         logo = r["logo_path"] if "logo_path" in r.keys() else None
+        pin_hash = r["owner_pin_hash"] if "owner_pin_hash" in r.keys() else None
         return ShopProfile(name=r["name"], gstin=r["gstin"], address=r["address"],
                            phone=r["phone"], state_code=r["state_code"],
-                           invoice_prefix=r["invoice_prefix"], logo_path=logo)
+                           invoice_prefix=r["invoice_prefix"], logo_path=logo,
+                           owner_pin_hash=pin_hash)
 
     def set_shop_profile(self, **fields) -> ShopProfile:
-        allowed = {"name", "gstin", "address", "phone", "state_code", "invoice_prefix", "logo_path"}
+        allowed = {"name", "gstin", "address", "phone", "state_code", "invoice_prefix", "logo_path", "owner_pin_hash"}
         sets, params = [], []
         for k, v in fields.items():
             if k in allowed and v is not None:
@@ -1288,6 +1327,140 @@ class Repository:
                 c.execute(f"UPDATE shop_profile SET {', '.join(sets)}, updated_at=? WHERE id=1",
                           params)
         return self.get_shop_profile()
+
+    # ================================================================== #
+    # STORE OWNER SECURITY PIN / PASSWORD MANAGEMENT
+    # ================================================================== #
+    def set_owner_password(self, password: str) -> None:
+        """Hash the provided plain password/PIN with salt and store in shop_profile."""
+        pin_hash = hash_password(password)
+        self.set_shop_profile(owner_pin_hash=pin_hash)
+
+    def set_owner_password_hash(self, pin_hash: str) -> None:
+        """Store an already hashed password in shop_profile."""
+        self.set_shop_profile(owner_pin_hash=pin_hash)
+
+    def verify_owner_password(self, password: str) -> bool:
+        """Verify password against shop_profile.owner_pin_hash using constant-time comparison."""
+        prof = self.get_shop_profile()
+        return verify_password(password, prof.owner_pin_hash)
+
+    def has_owner_password(self) -> bool:
+        """Return True if the store has configured an owner security PIN / password."""
+        prof = self.get_shop_profile()
+        return bool(prof.owner_pin_hash)
+
+    # ================================================================== #
+    # EMPLOYEES / STAFF MANAGEMENT
+    # ================================================================== #
+    def next_employee_code(self) -> str:
+        """Generate the next unique sequential employee code, e.g. EMP-001, EMP-002."""
+        rows = self.db.query_all("SELECT emp_code FROM employees")
+        max_num = 0
+        for r in rows:
+            code = r["emp_code"]
+            m = re.match(r"^EMP-(\d+)$", code, re.IGNORECASE)
+            if m:
+                try:
+                    num = int(m.group(1))
+                    if num > max_num:
+                        max_num = num
+                except ValueError:
+                    pass
+        return f"EMP-{max_num + 1:03d}"
+
+    def add_employee(
+        self,
+        name: str,
+        role: str = "cashier",
+        phone: str | None = None,
+        emp_code: str | None = None,
+    ) -> Employee:
+        """Register a new employee. Generates sequential EMP-xxx code if omitted."""
+        name = sanitize_employee_name(name)
+        role = (role or "cashier").strip().lower()
+        if not emp_code:
+            emp_code = self.next_employee_code()
+        else:
+            emp_code = emp_code.strip().upper()
+
+        existing = self.db.query_one("SELECT id FROM employees WHERE UPPER(emp_code) = ?", (emp_code,))
+        if existing:
+            raise ValidationError(f"Employee code '{emp_code}' is already assigned.")
+
+        phone_clean = validate_phone_number(phone) if phone else None
+        now = now_iso()
+
+        with self.db.transaction() as c:
+            try:
+                cur = c.execute(
+                    """INSERT INTO employees (emp_code, name, role, phone, is_active, created_at)
+                       VALUES (?, ?, ?, ?, 1, ?)""",
+                    (emp_code, name, role, phone_clean, now),
+                )
+            except sqlite3.IntegrityError as e:
+                raise ValidationError(f"Employee code '{emp_code}' is already assigned.") from e
+            eid = cur.lastrowid
+            r = c.execute("SELECT * FROM employees WHERE id=?", (eid,)).fetchone()
+        return self._employee_from_row(r)
+
+    def list_employees(self, active_only: bool = True, include_inactive: bool | None = None) -> list[Employee]:
+        """List all employees ordered by id."""
+        if include_inactive is not None:
+            active_only = not include_inactive
+        if active_only:
+            rows = self.db.query_all("SELECT * FROM employees WHERE is_active=1 ORDER BY id")
+        else:
+            rows = self.db.query_all("SELECT * FROM employees ORDER BY id")
+        return [self._employee_from_row(r) for r in rows]
+
+    def get_employee(self, code_or_name: str | int, active_only: bool = True) -> Employee | None:
+        """Search employee by id, emp_code (e.g. EMP-001), or name (case-insensitive)."""
+        if isinstance(code_or_name, int):
+            sql = "SELECT * FROM employees WHERE id=?"
+            if active_only:
+                sql += " AND is_active=1"
+            r = self.db.query_one(sql, (code_or_name,))
+            return self._employee_from_row(r) if r else None
+
+        code_or_name = str(code_or_name or "").strip()
+        if not code_or_name:
+            return None
+        sql = "SELECT * FROM employees WHERE (emp_code=? COLLATE NOCASE OR name=? COLLATE NOCASE)"
+        if active_only:
+            sql += " AND is_active=1"
+        sql += " ORDER BY id DESC LIMIT 1"
+        r = self.db.query_one(sql, (code_or_name, code_or_name))
+        if not r:
+            # Fallback to substring/partial name match (e.g. 'Ramesh' for 'Ramesh Kumar')
+            like_pat = f"%{code_or_name}%"
+            sql_like = "SELECT * FROM employees WHERE (name LIKE ?)"
+            if active_only:
+                sql_like += " AND is_active=1"
+            sql_like += " ORDER BY id ASC LIMIT 1"
+            r = self.db.query_one(sql_like, (like_pat,))
+
+        return self._employee_from_row(r) if r else None
+
+    def remove_employee(self, code_or_name: str | int) -> Employee:
+        """Deactivate an employee (soft delete). Historical invoice attribution is preserved."""
+        emp = self.get_employee(code_or_name, active_only=False)
+        if emp is None:
+            raise ValidationError(f"No employee found matching '{code_or_name}'.")
+        now = now_iso()
+        with self.db.transaction() as c:
+            c.execute(
+                "UPDATE employees SET is_active=0, deactivated_at=? WHERE id=?",
+                (now, emp.id),
+            )
+        # If this employee is currently set as active_cashier preference, reset to last_biller / owner
+        current_biller = self.get_preference("active_cashier")
+        if current_biller and (current_biller.lower() == emp.name.lower() or current_biller.lower() == emp.emp_code.lower()):
+            owner_biller = self.get_preference("last_biller") or "Owner"
+            self.set_preference("active_cashier", owner_biller)
+
+        r = self.db.query_one("SELECT * FROM employees WHERE id=?", (emp.id,))
+        return self._employee_from_row(r)
 
 
     # ================================================================== #

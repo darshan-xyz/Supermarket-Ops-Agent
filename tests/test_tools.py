@@ -492,6 +492,111 @@ def test_build_system_prompt_language_enforcement(repo):
     assert "MANDATORY LANGUAGE RULE: The store owner's configured language is Tamil." in prompt_ta
 
 
+@pytest.mark.asyncio
+async def test_cart_prompts_for_store_employee_name_when_unconfirmed(repo):
+    from tests.conftest import add
+    from kirana.agent.system_prompt import build_system_prompt
+
+    repo.set_preference("last_biller", "Karthik")
+    p = add(repo, "Sunfeast Dark Fantasy 75g", "packet", 18, 40, 30, stock=50)
+
+    # 1. Add item without setting biller
+    res = await call("cart_add_item", product_id=p.id, quantity=1)
+    assert not _is_error(res)
+    text = _text(res)
+    assert "Cashier: Karthik (unconfirmed)" in text
+    assert "Store Employee / Cashier name" in text
+    assert "Customer name & 10-digit mobile number" in text
+
+    # Check system prompt context instructs to ask for store employee
+    prompt = build_system_prompt(repo, chat_id=1)
+    assert "Cashier / Billed By: Karthik (DEFAULT / UNCONFIRMED - MUST ASK STORE EMPLOYEE NAME)" in prompt
+    assert "Store employee / cashier name who is billing this order" in prompt
+
+    # 2. Confirm cashier explicitly
+    res_biller = await call("cart_set_biller", employee_name="Suresh")
+    assert not _is_error(res_biller)
+    biller_text = _text(res_biller)
+    assert "Cashier: Suresh" in biller_text
+    assert "(unconfirmed)" not in biller_text
+    assert "Store Employee / Cashier name" not in biller_text
+
+    # Prompt now shows confirmed
+    prompt_confirmed = build_system_prompt(repo, chat_id=1)
+    assert "Cashier / Billed By: Suresh (Confirmed for this bill)" in prompt_confirmed
+
+
+@pytest.mark.asyncio
+async def test_employee_management_and_password_authorization(repo):
+    ctx.init_context(repo)
+    ctx.current_chat.set(101)
+
+    # 1. Initially no employees
+    res_list0 = await call("list_employees")
+    assert not _is_error(res_list0)
+    assert "No employees registered" in _text(res_list0)
+
+    # 2. Add employees
+    res_add1 = await call("add_employee", name="Ramesh Kumar", role="cashier")
+    assert not _is_error(res_add1)
+    assert "EMP-001" in _text(res_add1)
+    assert "Ramesh Kumar" in _text(res_add1)
+
+    res_add2 = await call("add_employee", name="Priya Sundaram", role="manager")
+    assert not _is_error(res_add2)
+    assert "EMP-002" in _text(res_add2)
+
+    # 3. List employees
+    res_list = await call("list_employees")
+    assert not _is_error(res_list)
+    assert "• **EMP-001**: Ramesh Kumar (Cashier)" in _text(res_list)
+    assert "• **EMP-002**: Priya Sundaram (Manager)" in _text(res_list)
+
+    # 4. Set owner password
+    repo.set_owner_password("Admin#2026")
+    assert repo.has_owner_password() is True
+
+    # 5. Remove employee without confirmation or password -> returns warning
+    res_rem_warn = await call("remove_employee", code_or_name="EMP-001")
+    assert not _is_error(res_rem_warn)
+    text_warn = _text(res_rem_warn)
+    assert "CONFIRMATION & AUTHORIZATION REQUIRED" in text_warn
+    assert "EMP-001" in text_warn
+    assert "Ramesh Kumar" in text_warn
+
+    # 6. Remove employee with wrong password -> rejected
+    res_rem_wrong = await call("remove_employee", code_or_name="EMP-001", password="wrongpassword", confirm=True)
+    assert _is_error(res_rem_wrong)
+    assert "Invalid store owner security password/PIN" in _text(res_rem_wrong)
+
+    # 7. Remove employee with correct password -> successfully deactivated
+    res_rem_ok = await call("remove_employee", code_or_name="EMP-001", password="Admin#2026", confirm=True)
+    assert not _is_error(res_rem_ok)
+    assert "successfully deactivated" in _text(res_rem_ok)
+
+    # Verify active list now only has EMP-002
+    active_emps = repo.list_employees(include_inactive=False)
+    assert len(active_emps) == 1
+    assert active_emps[0].emp_code == "EMP-002"
+
+    # Inactive list includes EMP-001
+    all_emps = repo.list_employees(include_inactive=True)
+    assert len(all_emps) == 2
+    assert any(e.emp_code == "EMP-001" and not e.is_active for e in all_emps)
+
+    # 8. Test change_owner_password
+    res_chg_bad = await call("change_owner_password", old_password="bad", new_password="NewSecretPass99")
+    assert _is_error(res_chg_bad)
+
+    res_chg_ok = await call("change_owner_password", old_password="Admin#2026", new_password="NewSecretPass99")
+    assert not _is_error(res_chg_ok)
+    assert "updated successfully" in _text(res_chg_ok)
+    assert repo.verify_owner_password("NewSecretPass99") is True
+    assert repo.verify_owner_password("Admin#2026") is False
+
+
+
+
 
 
 

@@ -36,10 +36,14 @@ def _format_cart(view: CartView, note: str | None = None) -> dict:
     repo = get_repo()
     seq = repo.upcoming_daily_seq()
     biller = view.biller_name or repo.get_preference("active_cashier")
+    biller_confirmed = getattr(view, "biller_confirmed", False)
     rows = [f"🛒 **Draft Bill #{seq} (In Progress)**"]
     meta_info = []
     if biller:
-        meta_info.append(f"Cashier: {biller}")
+        if biller_confirmed:
+            meta_info.append(f"Cashier: {biller}")
+        else:
+            meta_info.append(f"Cashier: {biller} (unconfirmed)")
     if view.customer_name:
         cust_str = view.customer_name
         if view.customer_phone:
@@ -76,8 +80,11 @@ def _format_cart(view: CartView, note: str | None = None) -> dict:
     rows.append("⚠️ *Draft only — stock is deducted upon finalization with payment.*")
 
     missing_details = []
-    if not biller:
-        missing_details.append("Cashier/Employee name (ask who is billing)")
+    if not biller_confirmed:
+        if biller:
+            missing_details.append(f"Store Employee / Cashier name (confirm if {biller} or another employee is billing)")
+        else:
+            missing_details.append("Store Employee / Cashier name (who is billing this order)")
     if not view.customer_name and not view.customer_phone:
         missing_details.append("Customer name & 10-digit mobile number (to track purchase history)")
     if missing_details:
@@ -197,6 +204,18 @@ def _resolve_product(
                 "type": "boolean",
                 "description": "Set to true only after the owner confirms a bulk order quantity above 1000.",
             },
+            "employee_name": {
+                "type": "string",
+                "description": "Optional name of the employee / cashier billing currently.",
+            },
+            "customer_name": {
+                "type": "string",
+                "description": "Optional customer name.",
+            },
+            "customer_phone": {
+                "type": "string",
+                "description": "Optional customer 10-digit mobile phone number.",
+            },
         },
         "required": ["quantity"],
     },
@@ -271,6 +290,16 @@ async def cart_add_item(args):
             )
 
     chat_id = current_chat.get() or 0
+    emp_name = arg(args, "employee_name")
+    if emp_name:
+        repo.cart_set_biller(chat_id, emp_name)
+    cust_name = arg(args, "customer_name")
+    cust_phone = arg(args, "customer_phone")
+    if cust_name:
+        repo.cart_set_customer(chat_id, cust_name, phone=cust_phone)
+    elif cust_phone:
+        repo.cart_set_customer(chat_id, "Walk-in Customer", phone=cust_phone)
+
     view = repo.cart_add_item(
         chat_id, product.id, qty, arg(args, "unit")
     )
@@ -304,6 +333,18 @@ async def cart_add_item(args):
             "confirm_bulk": {
                 "type": "boolean",
                 "description": "Set to true if owner confirmed bulk order (>1000 total or single item >1000).",
+            },
+            "employee_name": {
+                "type": "string",
+                "description": "Optional name of the employee / cashier billing currently.",
+            },
+            "customer_name": {
+                "type": "string",
+                "description": "Optional customer name.",
+            },
+            "customer_phone": {
+                "type": "string",
+                "description": "Optional customer 10-digit mobile phone number.",
             },
         },
         "required": ["items"],
@@ -401,6 +442,17 @@ async def cart_add_batch(args):
             "and pass confirm_bulk=true only after the owner confirms.",
             code="bulk_confirmation_required",
         )
+
+    # Apply optional employee / customer details if provided
+    emp_name = arg(args, "employee_name")
+    if emp_name:
+        repo.cart_set_biller(chat_id, emp_name)
+    cust_name = arg(args, "customer_name")
+    cust_phone = arg(args, "customer_phone")
+    if cust_name:
+        repo.cart_set_customer(chat_id, cust_name, phone=cust_phone)
+    elif cust_phone:
+        repo.cart_set_customer(chat_id, "Walk-in Customer", phone=cust_phone)
 
     # Add items to cart
     view = None

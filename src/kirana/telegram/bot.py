@@ -56,6 +56,7 @@ from ..services.backup import (
     upload_backup_to_telegram,
     verify_backup_archive,
 )
+from ..security.password import check_pin_rate_limit, record_failed_attempt, reset_rate_limit
 from ..services.logo_service import validate_and_process_logo
 from ..tools.context import get_repo, init_context, take_output_files
 from .jobs import register_jobs
@@ -745,8 +746,8 @@ async def _cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     user = registry.get_user_for_chat(chat_id)
     lang = normalize_lang(user.preferred_language if user else "en")
 
-    # 1. Clear deletion confirm if active
-    if context.chat_data.pop("awaiting_delete_confirm", None):
+    # 1. Clear deletion confirm or PIN if active
+    if context.chat_data.pop("awaiting_delete_confirm", None) or context.chat_data.pop("awaiting_delete_pin", None):
         tenant = registry.get_tenant_for_chat(chat_id)
         name = tenant.store_name if tenant else "Your store"
         await update.message.reply_text(f"✅ Deletion cancelled. {name} remains safe.")
@@ -797,6 +798,7 @@ async def _delete_account_callback(update: Update, context: ContextTypes.DEFAULT
 
     if data == "del_acc:cancel":
         context.chat_data.pop("awaiting_delete_confirm", None)
+        context.chat_data.pop("awaiting_delete_pin", None)
         try:
             await query.edit_message_reply_markup(reply_markup=None)
         except Exception:
@@ -819,6 +821,32 @@ async def _delete_account_callback(update: Update, context: ContextTypes.DEFAULT
             await query.edit_message_reply_markup(reply_markup=None)
         except Exception:
             pass
+
+        repo = registry.get_store_repo(store_code)
+        if repo and repo.has_owner_password():
+            context.chat_data["awaiting_delete_pin"] = store_code
+            context.chat_data.pop("awaiting_delete_confirm", None)
+            pin_prompts = {
+                "ta": (
+                    "🔐 <b>உரிமையாளர் பாதுகாப்பு PIN தேவை:</b>\n\n"
+                    "கடை மற்றும் அனைத்து தரவுகளையும் நிரந்தரமாக நீக்க உங்கள் <b>உரிமையாளர் பாதுகாப்பு PIN அல்லது கடவுச்சொல்லை</b> உள்ளிடவும்:\n\n"
+                    "<i>(ரத்து செய்ய 'cancel' என தட்டச்சு செய்யவும்)</i>"
+                ),
+                "hi": (
+                    "🔐 <b>स्टोर मालिक सुरक्षा पिन आवश्यक:</b>\n\n"
+                    "स्टोर और सभी डेटा को स्थायी रूप से हटाने के लिए कृपया अपना <b>सुरक्षा पिन या पासवर्ड</b> दर्ज करें:\n\n"
+                    "<i>(रद्द करने के लिए 'cancel' टाइप करें)</i>"
+                ),
+                "en": (
+                    "🔐 <b>Store Owner Security PIN Required:</b>\n\n"
+                    "To authorize permanent deletion of your store and database, please enter your <b>Store Owner Security PIN / Password</b>:\n\n"
+                    "<i>(To abort, reply 'cancel')</i>"
+                ),
+            }
+            if query.message:
+                await query.message.reply_text(pin_prompts.get(lang, pin_prompts["en"]), parse_mode=ParseMode.HTML)
+            return
+
         if query.message:
             await _execute_store_deletion(chat_id, store_code, lang, context, query.message, is_callback=True)
 
@@ -944,10 +972,52 @@ async def _message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     msg_text_lower = (update.message.text or "").strip().lower()
 
+    # 2.5 Check for active deletion PIN challenge
+    awaiting_pin_store = context.chat_data.get("awaiting_delete_pin")
+    if awaiting_pin_store:
+        user = registry.get_user_for_chat(chat_id)
+        lang = normalize_lang(user.preferred_language if user else "en")
+        if msg_text_lower in ("cancel", "no", "stop", "abort", "ரத்து", "रद्द"):
+            context.chat_data.pop("awaiting_delete_pin", None)
+            t_name = tenant.store_name if tenant else "Your store"
+            t_code = f" ({tenant.store_code})" if tenant else ""
+            cancel_msgs = {
+                "ta": f"✅ <b>நீக்குதல் ரத்து செய்யப்பட்டது:</b> உங்கள் கடை <b>{t_name}</b>{t_code} பாதுகாப்பாக உள்ளது.",
+                "hi": f"✅ <b>हटाना रद्द किया गया:</b> आपका स्टोर <b>{t_name}</b>{t_code} पूरी तरह सुरक्षित है।",
+                "en": f"✅ <b>Deletion Cancelled:</b> Your store <b>{t_name}</b>{t_code} remains completely safe.",
+            }
+            await update.message.reply_text(cancel_msgs.get(lang, cancel_msgs["en"]), parse_mode=ParseMode.HTML)
+            return
+
+        rl = check_pin_rate_limit(chat_id)
+        if rl.is_locked:
+            mins = int(rl.lockout_remaining_seconds // 60) + 1
+            await update.message.reply_text(f"⚠️ Too many failed security attempts. Rate-limited for {mins} minutes.")
+            return
+
+        entered_pin = (update.message.text or "").strip()
+        repo = registry.get_store_repo(awaiting_pin_store)
+        if not repo.verify_owner_password(entered_pin):
+            rl = record_failed_attempt(chat_id)
+            err_pin = {
+                "ta": f"❌ தவறான பாதுகாப்பு PIN / கடவுச்சொல். (மீதமுள்ள முயற்சிகள்: {rl.remaining_attempts})",
+                "hi": f"❌ अमान्य सुरक्षा पिन / पासवर्ड। (शेष प्रयास: {rl.remaining_attempts})",
+                "en": f"❌ Incorrect Store Owner Security PIN / Password. ({rl.remaining_attempts} attempts remaining)",
+            }
+            await update.message.reply_text(err_pin.get(lang, err_pin["en"]))
+            return
+
+        reset_rate_limit(chat_id)
+        context.chat_data.pop("awaiting_delete_pin", None)
+        user = registry.get_user_for_chat(chat_id)
+        lang = normalize_lang(user.preferred_language if user else "en")
+        await _execute_store_deletion(chat_id, awaiting_pin_store, lang, context, update.message, is_callback=False)
+        return
+
     # 3. Check for active deletion confirmation challenge
     awaiting_delete = context.chat_data.get("awaiting_delete_confirm")
     if awaiting_delete:
-        if msg_text_lower in ("cancel", "no", "stop", "abort", "ரத்து", "रद्द"):
+        if msg_text_lower in ("cancel", "no", "stop", "abort", "ரத்து", "ரद्द"):
             context.chat_data.pop("awaiting_delete_confirm", None)
             user = registry.get_user_for_chat(chat_id)
             lang = normalize_lang(user.preferred_language if user else "en")
@@ -968,6 +1038,29 @@ async def _message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             context.chat_data.pop("awaiting_delete_confirm", None)
             user = registry.get_user_for_chat(chat_id)
             lang = normalize_lang(user.preferred_language if user else "en")
+            repo = registry.get_store_repo(awaiting_delete)
+            if repo and repo.has_owner_password():
+                context.chat_data["awaiting_delete_pin"] = awaiting_delete
+                pin_prompts = {
+                    "ta": (
+                        "🔐 <b>உரிமையாளர் பாதுகாப்பு PIN தேவை:</b>\n\n"
+                        "கடை மற்றும் அனைத்து தரவுகளையும் நிரந்தரமாக நீக்க உங்கள் <b>உரிமையாளர் பாதுகாப்பு PIN அல்லது கடவுச்சொல்லை</b> உள்ளிடவும்:\n\n"
+                        "<i>(ரத்து செய்ய 'cancel' என தட்டச்சு செய்யவும்)</i>"
+                    ),
+                    "hi": (
+                        "🔐 <b>स्टोर मालिक सुरक्षा पिन आवश्यक:</b>\n\n"
+                        "स्टोर और सभी डेटा को स्थायी रूप से हटाने के लिए कृपया अपना <b>सुरक्षा पिन या पासवर्ड</b> दर्ज करें:\n\n"
+                        "<i>(रद्द करने के लिए 'cancel' टाइप करें)</i>"
+                    ),
+                    "en": (
+                        "🔐 <b>Store Owner Security PIN Required:</b>\n\n"
+                        "To authorize permanent deletion of your store and database, please enter your <b>Store Owner Security PIN / Password</b>:\n\n"
+                        "<i>(To abort, reply 'cancel')</i>"
+                    ),
+                }
+                await update.message.reply_text(pin_prompts.get(lang, pin_prompts["en"]), parse_mode=ParseMode.HTML)
+                return
+
             await _execute_store_deletion(chat_id, awaiting_delete, lang, context, update.message, is_callback=False)
             return
 

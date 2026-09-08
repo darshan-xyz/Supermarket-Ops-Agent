@@ -12,6 +12,7 @@ from .analytics import ANALYTICS_TOOLS
 from .billing import BILLING_TOOLS
 from .customer import CUSTOMER_TOOLS
 from .documents import DOCUMENT_TOOLS
+from .employee import EMPLOYEE_TOOLS
 from .inventory import INVENTORY_TOOLS
 from .khata import KHATA_TOOLS
 from .preferences import MEMORY_TOOLS
@@ -25,6 +26,7 @@ ALL_TOOLS: list[KiranaTool] = [
     *ANALYTICS_TOOLS,
     *DOCUMENT_TOOLS,
     *MEMORY_TOOLS,
+    *EMPLOYEE_TOOLS,
 ]
 
 TOOLS_BY_NAME: dict[str, KiranaTool] = {t.name: t for t in ALL_TOOLS}

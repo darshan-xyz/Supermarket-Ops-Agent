@@ -357,4 +357,52 @@ def test_customer_resolution_and_purchase_history(repo):
     assert hist_name.customer.id == hist.customer.id
 
 
+def test_employee_crud_and_biller_resolution(repo):
+    # Add employees
+    emp1 = repo.add_employee("Ramesh Kumar", role="cashier", phone="+91 9876543210", emp_code="EMP-001")
+    emp2 = repo.add_employee("Suresh Sharma", role="inventory", emp_code="EMP-002")
+    assert emp1.emp_code == "EMP-001"
+    assert emp1.name == "Ramesh Kumar"
+    assert emp2.emp_code == "EMP-002"
 
+    # Duplicate code rejection
+    with pytest.raises(ValidationError, match="already assigned"):
+        repo.add_employee("Duplicate Person", emp_code="EMP-001")
+
+    # Next employee code generator
+    assert repo.next_employee_code() == "EMP-003"
+
+    # Lookup by ID, code, and partial name
+    assert repo.get_employee(emp1.id).name == "Ramesh Kumar"
+    assert repo.get_employee("EMP-001").name == "Ramesh Kumar"
+    assert repo.get_employee("suresh").emp_code == "EMP-002"
+
+    # List active employees
+    active = repo.list_employees(active_only=True)
+    assert len(active) == 2
+
+    # Remove (soft delete)
+    removed = repo.remove_employee(emp1.id)
+    assert removed is not None
+    assert removed.is_active is False
+
+    # Check active list vs all
+    assert len(repo.list_employees(active_only=True)) == 1
+    assert len(repo.list_employees(active_only=False)) == 2
+
+    # Cannot get inactive employee via default get_employee active check
+    assert repo.get_employee("EMP-001", active_only=True) is None
+    assert repo.get_employee("EMP-001", active_only=False) is not None
+
+
+def test_owner_password_management(repo):
+    # Initially no password set
+    assert repo.has_owner_password() is False
+
+    # Set password
+    repo.set_owner_password("StoreSecret@123")
+    assert repo.has_owner_password() is True
+
+    # Verification
+    assert repo.verify_owner_password("StoreSecret@123") is True
+    assert repo.verify_owner_password("WrongSecret") is False

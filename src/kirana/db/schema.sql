@@ -136,8 +136,24 @@ CREATE TABLE IF NOT EXISTS shop_profile (
   state_code     TEXT NOT NULL DEFAULT '29',
   invoice_prefix TEXT NOT NULL DEFAULT 'INV',
   logo_path      TEXT,
+  owner_pin_hash TEXT,
   updated_at     TEXT
 );
+
+-- ---------- Employees / Staff ----------
+CREATE TABLE IF NOT EXISTS employees (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  emp_code       TEXT UNIQUE NOT NULL,
+  name           TEXT NOT NULL,
+  role           TEXT NOT NULL DEFAULT 'cashier',
+  phone          TEXT,
+  is_active      INTEGER NOT NULL DEFAULT 1,
+  created_at     TEXT NOT NULL,
+  deactivated_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_employees_code ON employees(emp_code);
+CREATE INDEX IF NOT EXISTS idx_employees_name ON employees(name COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS idx_employees_active ON employees(is_active);
 
 
 -- ---------- Transport idempotency / sessions ----------

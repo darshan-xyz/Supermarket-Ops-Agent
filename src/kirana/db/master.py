@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS tenants (
     tagline TEXT,
     db_filename TEXT UNIQUE NOT NULL,
     status TEXT NOT NULL DEFAULT 'active',
+    owner_pin_hash TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -97,6 +98,7 @@ class Tenant:
     status: str
     created_at: str
     updated_at: str
+    owner_pin_hash: str | None = None
 
     @property
     def db_path(self) -> Path:
@@ -142,6 +144,9 @@ class MasterRegistry:
         STORES_DIR.mkdir(parents=True, exist_ok=True)
         with self.db._write_lock:
             self.db._conn().executescript(_MASTER_SCHEMA)
+            cols = [col["name"] for col in self.db._conn().execute("PRAGMA table_info(tenants)").fetchall()]
+            if "owner_pin_hash" not in cols:
+                self.db._conn().execute("ALTER TABLE tenants ADD COLUMN owner_pin_hash TEXT")
 
     def _generate_store_code(self) -> str:
         """Generate a random unique store code like KIR-58291."""
@@ -163,6 +168,8 @@ class MasterRegistry:
         tagline: str | None = None,
         logo_path: str | None = None,
         preferred_language: str = "en",
+        owner_pin_hash: str | None = None,
+        employees: list[dict] | list[str] | None = None,
     ) -> Tenant:
         """Create a new tenant record, provision its isolated SQLite database, and seed standard catalog."""
         norm_phone = normalize_phone(phone_e164)
@@ -177,11 +184,11 @@ class MasterRegistry:
         with self.db.transaction() as conn:
             cursor = conn.execute(
                 """INSERT INTO tenants
-                   (store_code, store_name, owner_name, phone_e164, address, gstin, tagline, db_filename, status, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)""",
+                   (store_code, store_name, owner_name, phone_e164, address, gstin, tagline, db_filename, status, owner_pin_hash, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)""",
                 (store_code, store_name.strip(), owner_name.strip(), norm_phone, address.strip(),
                  gstin.strip() if gstin else None, tagline.strip() if tagline else None,
-                 db_filename, now, now),
+                 db_filename, owner_pin_hash, now, now),
             )
             tenant_id = cursor.lastrowid
 
@@ -245,7 +252,24 @@ class MasterRegistry:
             phone=norm_phone,
             tagline=tagline.strip() if tagline else f"Welcome to {store_name}!",
             logo_path=logo_path.strip() if logo_path else None,
+            owner_pin_hash=owner_pin_hash,
         )
+
+        if owner_pin_hash:
+            tenant_repo.set_owner_password_hash(owner_pin_hash)
+
+        if employees:
+            for emp in employees:
+                if isinstance(emp, dict):
+                    name_val = emp.get("name", "").strip()
+                    if name_val:
+                        tenant_repo.add_employee(
+                            name=name_val,
+                            role=emp.get("role", "cashier"),
+                            phone=emp.get("phone"),
+                        )
+                elif isinstance(emp, str) and emp.strip():
+                    tenant_repo.add_employee(name=emp.strip(), role="cashier")
 
         # Initialize default store preferences
         tenant_repo.set_preference("last_biller", owner_name.strip())
@@ -603,6 +627,7 @@ class MasterRegistry:
             status=row["status"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
+            owner_pin_hash=row["owner_pin_hash"] if "owner_pin_hash" in row.keys() else None,
         )
 
 
