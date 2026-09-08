@@ -15,11 +15,14 @@ COPY skills ./skills
 COPY scripts ./scripts
 
 # Non-root
-RUN useradd -m app && mkdir -p /app/data /app/artifacts_out \
+RUN useradd -m app && mkdir -p /app/data/stores/logos /app/artifacts_out \
     && chown -R app:app /app
 USER app
 
-ENV KIRANA_DB_PATH=/app/data/kirana.db \
+ENV KIRANA_PROJECT_ROOT=/app \
+    KIRANA_DB_PATH=/app/data/kirana.db \
+    KIRANA_MASTER_DB_PATH=/app/data/master.db \
+    KIRANA_STORES_DIR=/app/data/stores \
     KIRANA_ARTIFACTS_DIR=/app/artifacts_out \
     PORT=10000 \
     PYTHONUNBUFFERED=1

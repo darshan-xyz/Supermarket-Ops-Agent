@@ -11,6 +11,8 @@ dependencies = [
     "python-pptx>=0.6.23",
     "python-dotenv>=1.0",
     "num2words>=0.5.13",
+    "pillow>=10.0.0",
+    "httpx>=0.27.0",
 ]
 
 

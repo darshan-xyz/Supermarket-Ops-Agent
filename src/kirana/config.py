@@ -21,8 +21,22 @@ def _path(env_key: str, default: str) -> Path:
     return p
 
 
-# Repo root (this file is src/kirana/config.py -> parents[2] == project root).
-PROJECT_ROOT: Path = Path(__file__).resolve().parents[2]
+def _get_project_root() -> Path:
+    if "KIRANA_PROJECT_ROOT" in os.environ:
+        return Path(os.environ["KIRANA_PROJECT_ROOT"]).resolve()
+    # If pyproject.toml exists in cwd, use cwd
+    cwd = Path.cwd().resolve()
+    if (cwd / "pyproject.toml").exists() or (cwd / "skills").exists():
+        return cwd
+    # Check parent directory hierarchy from __file__
+    for parent in Path(__file__).resolve().parents:
+        if (parent / "pyproject.toml").exists():
+            return parent
+    return cwd
+
+
+# Repo root
+PROJECT_ROOT: Path = _get_project_root()
 
 # --- Storage ---
 DB_PATH: Path = _path("KIRANA_DB_PATH", str(PROJECT_ROOT / "data" / "kirana.db"))

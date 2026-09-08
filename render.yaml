@@ -34,3 +34,13 @@ services:
         value: 10000
       - key: BACKUP_AUTO_RESTORE_ON_BOOT
         value: "1"
+      - key: KIRANA_PROJECT_ROOT
+        value: /app
+      - key: KIRANA_DB_PATH
+        value: /app/data/kirana.db
+      - key: KIRANA_MASTER_DB_PATH
+        value: /app/data/master.db
+      - key: KIRANA_STORES_DIR
+        value: /app/data/stores
+      - key: KIRANA_ARTIFACTS_DIR
+        value: /app/artifacts_out

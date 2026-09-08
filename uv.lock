@@ -401,7 +401,9 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "google-genai" },
+    { name = "httpx" },
     { name = "num2words" },
+    { name = "pillow" },
     { name = "python-dotenv" },
     { name = "python-pptx" },
     { name = "python-telegram-bot", extra = ["job-queue"] },
@@ -418,7 +420,9 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "google-genai", specifier = ">=2.0.0" },
+    { name = "httpx", specifier = ">=0.27.0" },
     { name = "num2words", specifier = ">=0.5.13" },
+    { name = "pillow", specifier = ">=10.0.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },
     { name = "python-dotenv", specifier = ">=1.0" },
