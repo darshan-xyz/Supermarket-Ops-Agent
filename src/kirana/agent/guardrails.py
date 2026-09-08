@@ -253,3 +253,32 @@ def validate_date_range(start: str, end: str, max_days: int = 366) -> tuple[str,
         )
 
     return d_start.isoformat(), d_end.isoformat()
+
+
+_GSTIN_REGEX = re.compile(r"^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$")
+
+
+def is_valid_gstin(gstin: str | None) -> bool:
+    """Return True if gstin matches the standard 15-character Indian GSTIN format."""
+    if not gstin:
+        return False
+    clean = re.sub(r"\s+", "", str(gstin)).upper()
+    return bool(_GSTIN_REGEX.match(clean))
+
+
+def validate_gstin(gstin: str | None) -> str | None:
+    """Validate and normalize a 15-character Indian GSTIN.
+
+    Returns clean 15-character uppercase string, or None if input is empty/None.
+    Raises ValueError if invalid format.
+    """
+    if gstin is None:
+        return None
+    clean = re.sub(r"\s+", "", str(gstin)).upper()
+    if not clean:
+        return None
+    if not _GSTIN_REGEX.match(clean):
+        raise ValueError(
+            f"Invalid GSTIN '{gstin}'. A valid Indian GSTIN must be a 15-character alphanumeric code (e.g. 33AAAAA0000A1Z5)."
+        )
+    return clean

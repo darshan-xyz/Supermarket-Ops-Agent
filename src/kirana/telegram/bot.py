@@ -22,6 +22,7 @@ from telegram import (
     InlineKeyboardMarkup,
     KeyboardButton,
     ReplyKeyboardMarkup,
+    ReplyKeyboardRemove,
     Update,
 )
 from telegram.constants import ChatAction, ParseMode
@@ -63,6 +64,7 @@ from .onboarding import (
     OnboardingStep,
     clear_onboarding_session,
     format_inventory_message,
+    get_onboarding_session,
     handle_onboarding_step,
     normalize_lang,
     prompt_phone_verification,
@@ -626,24 +628,15 @@ async def _execute_store_deletion(
             await reply_target.reply_text(msg, reply_markup=start_keyboard, parse_mode=ParseMode.HTML)
 
 
-async def _delete_account_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def prompt_deletion_confirmation(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    tenant: Any,
+    lang: str = "en",
+) -> None:
     """Prompt store owner with a high-friction confirmation card to delete store and account."""
     if not update.message or not update.effective_chat:
         return
-    chat_id = update.effective_chat.id
-    registry = get_master_registry()
-    tenant = registry.get_tenant_for_chat(chat_id)
-
-    if not tenant:
-        await update.message.reply_text(
-            "ℹ️ No active store is registered to this chat.\n"
-            "Type /start to register a new store!",
-            reply_markup=_LANG_KEYBOARD,
-        )
-        return
-
-    user = registry.get_user_for_chat(chat_id)
-    lang = normalize_lang(user.preferred_language if user else "en")
 
     # Set confirmation challenge in context
     context.chat_data["awaiting_delete_confirm"] = tenant.store_code
@@ -716,6 +709,78 @@ async def _delete_account_command(update: Update, context: ContextTypes.DEFAULT_
         reply_markup=keyboard,
         parse_mode=ParseMode.HTML,
     )
+
+
+async def _delete_account_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Prompt store owner with a high-friction confirmation card to delete store and account."""
+    if not update.message or not update.effective_chat:
+        return
+    chat_id = update.effective_chat.id
+
+    # Always clear any active onboarding session if present
+    clear_onboarding_session(chat_id)
+
+    registry = get_master_registry()
+    tenant = registry.get_tenant_for_chat(chat_id)
+
+    if not tenant:
+        await update.message.reply_text(
+            "ℹ️ No active store is registered to this chat.\n"
+            "Type /start to register a new store!",
+            reply_markup=_LANG_KEYBOARD,
+        )
+        return
+
+    user = registry.get_user_for_chat(chat_id)
+    lang = normalize_lang(user.preferred_language if user else "en")
+    await prompt_deletion_confirmation(update, context, tenant, lang)
+
+
+async def _cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /cancel — abort onboarding, active cart, or delete confirmation."""
+    if not update.message or not update.effective_chat:
+        return
+    chat_id = update.effective_chat.id
+    registry = get_master_registry()
+    user = registry.get_user_for_chat(chat_id)
+    lang = normalize_lang(user.preferred_language if user else "en")
+
+    # 1. Clear deletion confirm if active
+    if context.chat_data.pop("awaiting_delete_confirm", None):
+        tenant = registry.get_tenant_for_chat(chat_id)
+        name = tenant.store_name if tenant else "Your store"
+        await update.message.reply_text(f"✅ Deletion cancelled. {name} remains safe.")
+        return
+
+    # 2. Clear logo upload if active
+    if context.chat_data.pop("awaiting_logo_upload", None):
+        await update.message.reply_text("✅ Logo upload cancelled.")
+        return
+
+    # 3. Clear onboarding if active
+    state = get_onboarding_session(chat_id)
+    if state:
+        clear_onboarding_session(chat_id)
+        cancel_msgs = {
+            "ta": "❌ <b>கடை பதிவு ரத்து செய்யப்பட்டது.</b>\n\nபுதிய கடையை அமைக்க அல்லது தொடங்க /start என தட்டச்சு செய்யவும்.",
+            "hi": "❌ <b>स्टोर सेटअप रद्द कर दिया गया है।</b>\n\nनया स्टोर शुरू करने के लिए /start टाइप करें।",
+            "en": "❌ <b>Store setup cancelled.</b>\n\nType /start anytime to begin store registration again.",
+        }
+        await update.message.reply_text(
+            cancel_msgs.get(lang, cancel_msgs["en"]),
+            reply_markup=ReplyKeyboardRemove(),
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    # 4. Reset active shopping cart if any
+    tenant = registry.get_tenant_for_chat(chat_id)
+    if tenant:
+        repo = registry.get_store_repo(tenant.store_code)
+        repo.cart_clear(chat_id)
+        await update.message.reply_text("🛒 Current cart / action cleared. Ready for next command.")
+    else:
+        await update.message.reply_text("ℹ️ Nothing to cancel. Type /start to begin.")
 
 
 async def _delete_account_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1196,6 +1261,7 @@ def main() -> None:
     application.add_handler(CommandHandler("stock", _inventory))
     application.add_handler(CommandHandler("backup", _backup_command))
     application.add_handler(CommandHandler("restore", _restore_command))
+    application.add_handler(CommandHandler("cancel", _cancel_command))
     application.add_handler(CommandHandler("delete_account", _delete_account_command))
     application.add_handler(CommandHandler("deleteaccount", _delete_account_command))
     application.add_handler(CallbackQueryHandler(_language_callback, pattern=r"^lang:"))

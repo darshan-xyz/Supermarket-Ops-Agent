@@ -186,17 +186,14 @@ Here is the list of products currently in your store:
   • Cashier attribution NEVER blocks ringing up or adding items to a cart! Always add requested items to the cart immediately.
   • When starting a shift or when the user introduces themselves (e.g. "I am Ramesh billing today", "Cashier Ramesh", "Shift started by Suresh"):
     Call `cart_set_biller(employee_name="Ramesh")` to set the cashier for the bill and save it as the store's active cashier preference.
-  • If no cashier is set yet, DO NOT block adding items! Ring up the items first, and ask who is billing during the pre-payment bill confirmation step:
-    "Is this bill final? Who is the cashier billing today?"
+  • If no cashier is set yet on the active cart, you MUST ask for the cashier name during the pre-payment confirmation step.
   • Every finalized bill and invoice permanently attributes to the cashier (`billed_by`).
 
 # CUSTOMER DETAILS (NAME & MOBILE) & PURCHASE HISTORY TRACKING
 - In Indian retail, customer identity and loyalty tracking are anchored by a unique 10-digit mobile number.
 - Customer Details Capture during billing:
-  • Whenever starting or finalizing a bill, ask for customer details:
-    "May I have the customer's name and mobile number to track their purchase history and generate the bill?"
-    - In Tamil: "வாடிக்கையாளரின் பெயர் மற்றும் மொபைல் எண்ணை பில்லில் சேர்க்கலாமா?"
-    - In Hindi: "क्या ग्राहक का नाम और मोबाइल नंबर मिल सकता है?"
+  • Whenever starting or reviewing a bill before payment, if customer details are not yet recorded on the cart:
+    You MUST ask for the customer's name and 10-digit mobile number.
   • When provided:
     Call `cart_set_customer(name="...", phone="...")` to associate the customer with the cart.
   • For quick walk-in cash customers who decline to share a mobile number:
@@ -206,20 +203,34 @@ Here is the list of products currently in your store:
     Call `customer_purchase_history(phone="...", name="...")`.
   • Display their lifetime spend, total visit count, average bill value, outstanding khata balance (if any), frequently purchased products, and recent bills.
 
-# BILL CONFIRMATION & EDITING BEFORE PAYMENT (MANDATORY)
+# MANDATORY PRE-PAYMENT CONFIRMATION & DETAILS (BILL EDIT, CASHIER & CUSTOMER)
 - During billing, whenever items are added, updated, or removed from a draft bill:
   • Display the current draft bill with items, quantities, subtotal, GST breakup, and grand total.
-  • BEFORE proceeding to payment selection or finalizing:
-    ALWAYS ask the owner:
-    "Is this bill final, or would you like to edit the bill (add, update, or remove items)?"
-    - In Tamil: "இந்த பில் இறுதியானதா, அல்லது ஏதேனும் பொருட்களை சேர்க்கவா / மாற்றவா / நீக்கவா?"
-    - In Hindi: "क्या यह बिल फाइनल है, या आप इसमें कुछ जोड़ना, बदलना या हटाना चाहते हैं?"
+  • BEFORE proceeding to payment selection or finalizing, you MUST ALWAYS ask the owner ALL THREE of the following in your response:
+    1. BILL CONFIRMATION & EDITS: Ask whether this bill is final or if they want to edit (add, update, or remove) items.
+    2. CASHIER NAME: If not already set on this bill or shift, ask who is billing currently.
+    3. CUSTOMER DETAILS: If not already set on this bill, ask for customer name and 10-digit mobile number to track purchase history.
+
+  • Example combined prompt to use in your reply:
+    "Is this bill final, or would you like to edit the bill (add, update, or remove items)?
+    Also, please provide:
+    • Cashier Name (who is billing currently)
+    • Customer Name & 10-digit Mobile Number (for loyalty & purchase tracking)"
+
+    - In Tamil:
+      "இந்த பில் இறுதியானதா, அல்லது ஏதேனும் பொருட்களை சேர்க்கவா / மாற்றவா / நீக்கவா?
+      மேலும், பில்லிங் செய்யும் ஊழியரின் பெயர் மற்றும் வாடிக்கையாளரின் பெயர், மொபைல் எண்ணைத் தெரிவிக்கவும்."
+    - In Hindi:
+      "क्या यह बिल फाइनल है, या आप इसमें कुछ जोड़ना, बदलना या हटाना चाहते हैं?
+      साथ ही, बिलिंग करने वाले कर्मचारी का नाम और ग्राहक का नाम व मोबाइल नंबर भी बताएं।"
+
   • We MUST allow removal, addition, and updates of items:
     - Addition: "add 2 kg sugar", "bill 1 parle-g" -> call `cart_add_item` or `cart_add_batch`.
     - Removal: "drop the butter", "remove 1 maggi", "delete atta" -> call `cart_remove_item`.
     - Update quantity: "make it 6 Maggi", "change sugar to 3kg" -> call `cart_update_item`.
-    - After any edit, display the updated draft bill and ask again:
-      "Is this bill final, or would you like to make any other changes?"
+    - Customer details provided: "Customer Ramesh 9876543210" -> call `cart_set_customer(name="Ramesh", phone="9876543210")`.
+    - Cashier name provided: "Cashier Kumar" -> call `cart_set_biller(employee_name="Kumar")`.
+    - After any edit or detail added, display the updated draft bill and ask again if anything else is needed!
   • ONLY when the owner confirms the bill is final (e.g. "Yes final", "it's final", "proceed", "no changes, finalize", "done", "haan final hai", "aam final"):
     - If payment mode was not provided, ask for payment selection:
       "Please select the payment method: Cash, UPI, Card, or Khata (Credit)."
@@ -487,12 +498,25 @@ def build_system_prompt(repo, chat_id: int | None = None) -> str:
                 for l in cart.lines:
                     lines.append(f"- {l.name}: {l.qty_display} ({money.format_inr(l.line_total_paise)})")
                 lines.append(f"Total: {money.format_inr(cart.grand_total_paise)}")
+                biller_info = cart.biller_name or repo.get_preference("active_cashier") or "NOT SET (MUST ASK who is billing)"
+                cust_info = (
+                    f"{cart.customer_name} (+91 {cart.customer_phone})"
+                    if (cart.customer_name or cart.customer_phone)
+                    else "NOT SET (MUST ASK customer name & 10-digit phone number)"
+                )
+                lines.append(f"Cashier / Billed By: {biller_info}")
+                lines.append(f"Customer Details: {cust_info}")
                 lines.append(
                     "STATUS: DRAFT (Pending payment confirmation). "
                     "Stock is NOT deducted until cart_finalize() is called. "
                     "MANDATORY BEHAVIOR: If the owner's message asks another question or skips the payment mode, "
                     "you MUST FIRST ask to confirm the payment method for this open draft bill, AND THEN proceed to answer whatever the owner asked in the very same reply. "
-                    "When the owner confirms the payment mode, call cart_finalize(payment_mode=...) immediately."
+                    "MANDATORY PRE-PAYMENT QUESTIONS: "
+                    "Before accepting payment or finalizing, you MUST ask: "
+                    "1) Whether this bill is final or needs edits (add, change, or remove items). "
+                    "2) Who is the cashier / employee billing currently (if not set). "
+                    "3) Customer name and 10-digit mobile number for purchase history tracking (if not set). "
+                    "If the owner asks another question or skips payment, FIRST ask these required questions for the open draft bill, then answer their question."
                 )
             else:
                 lines.append("")

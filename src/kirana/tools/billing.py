@@ -75,6 +75,17 @@ def _format_cart(view: CartView, note: str | None = None) -> dict:
     rows.append("")
     rows.append("⚠️ *Draft only — stock is deducted upon finalization with payment.*")
 
+    missing_details = []
+    if not biller:
+        missing_details.append("Cashier/Employee name (ask who is billing)")
+    if not view.customer_name and not view.customer_phone:
+        missing_details.append("Customer name & 10-digit mobile number (to track purchase history)")
+    if missing_details:
+        rows.append(
+            "📋 *Required before payment: Ask whether this bill is final or needs edits (add/remove items), "
+            f"and ask for { ' and '.join(missing_details) }.*"
+        )
+
     summary = "\n".join(rows)
     if note:
         summary = f"{note}\n\n{summary}"

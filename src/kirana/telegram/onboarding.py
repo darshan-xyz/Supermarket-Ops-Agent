@@ -30,6 +30,7 @@ from telegram import (
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
+from ..agent.guardrails import is_valid_gstin
 from ..config import PROJECT_ROOT
 from ..db.master import MasterRegistry, get_master_registry, normalize_phone
 from ..domain.money import format_inr
@@ -244,6 +245,58 @@ async def handle_onboarding_step(
 
     lang = normalize_lang(state.language)
     msg = update.message
+    text = (msg.text or msg.caption or "").strip()
+    text_lower = text.lower()
+
+    # 1. Global Interception: Cancellation
+    cancel_keywords = {"cancel", "/cancel", "exit", "quit", "stop", "abort", "ரத்து", "रद्द"}
+    if text_lower in cancel_keywords:
+        clear_onboarding_session(chat_id)
+        cancel_msgs = {
+            "ta": "❌ <b>கடை பதிவு ரத்து செய்யப்பட்டது.</b>\n\nபுதிய கடையை அமைக்க அல்லது தொடங்க /start என தட்டச்சு செய்யவும்.",
+            "hi": "❌ <b>स्टोर सेटअप रद्द कर दिया गया है।</b>\n\nनया स्टोर शुरू करने के लिए /start टाइप करें।",
+            "en": "❌ <b>Store setup cancelled.</b>\n\nType /start anytime to begin store registration again.",
+        }
+        await msg.reply_text(
+            cancel_msgs.get(lang, cancel_msgs["en"]),
+            reply_markup=ReplyKeyboardRemove(),
+            parse_mode=ParseMode.HTML,
+        )
+        return True
+
+    # 2. Global Interception: Account / Store Deletion
+    deletion_keywords = {
+        "delete account",
+        "delete my account",
+        "delete store",
+        "delete my store",
+        "/delete_account",
+        "/deleteaccount",
+        "remove my store",
+        "remove store",
+        "கணக்கை நீக்கு",
+        "கடையை நீக்கு",
+        "खाता हटाएं",
+        "स्टोर हटाएं",
+    }
+    if text_lower in deletion_keywords:
+        clear_onboarding_session(chat_id)
+        tenant = registry.get_tenant_for_chat(chat_id)
+        if tenant:
+            from .bot import prompt_deletion_confirmation
+            await prompt_deletion_confirmation(update, context, tenant, lang)
+        else:
+            no_store_msgs = {
+                "ta": "ℹ️ <b>கடை பதிவு ரத்து செய்யப்பட்டது.</b>\n\nஇன்னும் எந்தக் கடையும் உருவாக்கப்படவில்லை. புதிய கடையை அமைக்க /start தட்டச்சு செய்யவும்.",
+                "hi": "ℹ️ <b>स्टोर सेटअप रद्द कर दिया गया है।</b>\n\nअभी तक कोई स्टोर नहीं बनाया गया था। नया स्टोर बनाने के लिए /start टाइप करें।",
+                "en": "ℹ️ <b>Store registration cancelled.</b>\n\nNo store was created yet, so there is nothing to delete. Type /start anytime to begin registration.",
+            }
+            await msg.reply_text(
+                no_store_msgs.get(lang, no_store_msgs["en"]),
+                reply_markup=ReplyKeyboardRemove(),
+                parse_mode=ParseMode.HTML,
+            )
+        return True
 
     # --- Step 0: Awaiting Language Selection ---
     if state.step == OnboardingStep.AWAITING_LANGUAGE:
@@ -443,14 +496,40 @@ async def handle_onboarding_step(
 
     # --- Step 6: Awaiting GSTIN -> Advance to Logo ---
     if state.step == OnboardingStep.AWAITING_GSTIN:
-        text = (msg.text or "").strip()
-        gstin = None
-        if text.lower() not in ("skip", "illai", "இல்லை", "nahi", "नहीं", "none", "no"):
-            gstin = text.upper()
+        raw_text = (msg.text or "").strip()
+        clean_gstin = re.sub(r"\s+", "", raw_text).upper()
 
-        state.gstin = gstin
-        state.step = OnboardingStep.AWAITING_LOGO
+        if raw_text.lower() in ("skip", "illai", "இல்லை", "nahi", "नहीं", "none", "no", "-"):
+            state.gstin = None
+            state.step = OnboardingStep.AWAITING_LOGO
+        elif is_valid_gstin(clean_gstin):
+            state.gstin = clean_gstin
+            state.step = OnboardingStep.AWAITING_LOGO
+        else:
+            invalid_gstin_msgs = {
+                "ta": (
+                    "⚠️ <b>தவறான ஜிஎஸ்டி எண் (Invalid GSTIN):</b>\n\n"
+                    "இந்திய ஜிஎஸ்டி எண் 15 எழுத்து/எண்களைக் கொண்டிருக்க வேண்டும் (எ.கா: <code>33AAAAA0000A1Z5</code>).\n\n"
+                    "👉 சரியான ஜிஎஸ்டி எண்ணை உள்ளிடவும், அல்லது உங்களிடம் ஜிஎஸ்டி இல்லையென்றால் <b>'skip'</b> அல்லது <b>'இல்லை'</b> என தட்டச்சு செய்யவும்."
+                ),
+                "hi": (
+                    "⚠️ <b>अमान्य जीएसटी नंबर (Invalid GSTIN):</b>\n\n"
+                    "भारतीय जीएसटी नंबर 15 अक्षरों/अंकों का होना चाहिए (उदा: <code>33AAAAA0000A1Z5</code>)।\n\n"
+                    "👉 कृपया सही GSTIN दर्ज करें, या यदि आपके पास नहीं है तो <b>'skip'</b> या <b>'नहीं'</b> टाइप करें।"
+                ),
+                "en": (
+                    "⚠️ <b>Invalid GSTIN Format:</b>\n\n"
+                    "An Indian GSTIN must be a 15-character alphanumeric code (e.g., <code>33AAAAA0000A1Z5</code>).\n\n"
+                    "👉 Please enter a valid 15-digit GSTIN, or type <b>'skip'</b> if you do not have one."
+                ),
+            }
+            await msg.reply_text(
+                invalid_gstin_msgs.get(lang, invalid_gstin_msgs["en"]),
+                parse_mode=ParseMode.HTML,
+            )
+            return True
 
+        gstin = state.gstin
         gstin_note = f"🏷️ GSTIN: <b>{gstin}</b>\n\n" if gstin else "🏷️ GSTIN: <i>(Skipped / தவிர்க்கப்பட்டது / छोड़ दिया)</i>\n\n"
 
         texts = {

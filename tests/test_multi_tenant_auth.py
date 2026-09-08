@@ -423,4 +423,108 @@ async def test_onboarding_questionnaire_with_logo_step(master_reg: MasterRegistr
     clear_onboarding_session(chat_id)
 
 
+@pytest.mark.asyncio
+async def test_onboarding_rejects_invalid_gstin(master_reg: MasterRegistry):
+    """Verify entering an invalid GSTIN does not advance to the logo step."""
+    from unittest.mock import AsyncMock, MagicMock
+    from kirana.telegram.onboarding import (
+        start_onboarding,
+        clear_onboarding_session,
+        handle_onboarding_step,
+        OnboardingStep,
+    )
+
+    chat_id = 8888
+    user_id = 9998
+    clear_onboarding_session(chat_id)
+    state = start_onboarding(chat_id, user_id, language="en", step=OnboardingStep.AWAITING_GSTIN)
+    state.phone_e164 = "+919876543211"
+    state.store_name = "Test Mart"
+    state.owner_name = "Ravi"
+    state.address = "123 Street"
+
+    msg = MagicMock()
+    msg.text = "NOT_A_GSTIN"
+    msg.photo = None
+    msg.document = None
+    msg.voice = None
+    msg.audio = None
+    msg.video = None
+    msg.video_note = None
+    msg.contact = None
+    msg.caption = None
+    msg.reply_text = AsyncMock()
+    up = MagicMock()
+    up.effective_chat.id = chat_id
+    up.effective_user.id = user_id
+    up.message = msg
+
+    handled = await handle_onboarding_step(up, None, registry=master_reg)
+    assert handled is True
+    # Still waiting for GSTIN because it's invalid!
+    assert state.step == OnboardingStep.AWAITING_GSTIN
+    assert state.gstin is None
+    assert "Invalid GSTIN Format" in msg.reply_text.call_args[0][0]
+
+    # Now provide a valid GSTIN
+    msg.text = "33AAAAA0000A1Z5"
+    handled = await handle_onboarding_step(up, None, registry=master_reg)
+    assert handled is True
+    assert state.step == OnboardingStep.AWAITING_LOGO
+    assert state.gstin == "33AAAAA0000A1Z5"
+
+    clear_onboarding_session(chat_id)
+
+
+@pytest.mark.asyncio
+async def test_onboarding_cancel_and_delete_interceptors(master_reg: MasterRegistry):
+    """Verify that typing 'cancel' or 'delete my account' during onboarding exits cleanly."""
+    from unittest.mock import AsyncMock, MagicMock
+    from kirana.telegram.onboarding import (
+        start_onboarding,
+        get_onboarding_session,
+        clear_onboarding_session,
+        handle_onboarding_step,
+        OnboardingStep,
+    )
+
+    chat_id = 7771
+    user_id = 8881
+
+    # Case 1: Cancel during AWAITING_STORE_NAME
+    clear_onboarding_session(chat_id)
+    start_onboarding(chat_id, user_id, language="en", step=OnboardingStep.AWAITING_STORE_NAME)
+
+    msg = MagicMock()
+    msg.text = "cancel"
+    msg.photo = None
+    msg.document = None
+    msg.voice = None
+    msg.audio = None
+    msg.video = None
+    msg.video_note = None
+    msg.contact = None
+    msg.caption = None
+    msg.reply_text = AsyncMock()
+    up = MagicMock()
+    up.effective_chat.id = chat_id
+    up.effective_user.id = user_id
+    up.message = msg
+
+    handled = await handle_onboarding_step(up, None, registry=master_reg)
+    assert handled is True
+    assert get_onboarding_session(chat_id) is None
+    assert "Store setup cancelled" in msg.reply_text.call_args[0][0]
+
+    # Case 2: "delete my account" during AWAITING_GSTIN without prior store
+    clear_onboarding_session(chat_id)
+    start_onboarding(chat_id, user_id, language="en", step=OnboardingStep.AWAITING_GSTIN)
+
+    msg.text = "delete my account"
+    handled = await handle_onboarding_step(up, None, registry=master_reg)
+    assert handled is True
+    assert get_onboarding_session(chat_id) is None
+    assert "Store registration cancelled" in msg.reply_text.call_args[0][0]
+
+
 
