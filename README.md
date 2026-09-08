@@ -20,19 +20,9 @@
 
 ## Demo Video
 
-<div align="center">
+https://github.com/user-attachments/assets/f564a845-4d20-4076-a29b-30eaaa4c1754
 
-<video src="video.mp4" controls="controls" width="100%" style="max-width: 850px; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.15);">
-  <source src="video.mp4" type="video/mp4">
-  Your browser does not support the video tag.
-</video>
-
-<p>
-  <b>🎥 Live System Operations Walkthrough</b><br>
-  <sub><i>If your markdown viewer does not render the inline player above, <a href="video.mp4">click here to play / download <code>video.mp4</code> directly</a>.</i></sub>
-</p>
-
-</div>
+> **🎥 Live Operations Walkthrough**: End-to-end autonomous Kirana operations demo — multi-lingual conversational billing, real-time inventory management, batch expiry tracking, voice order processing, khata credit ledgers, and automated daily report generation. *(Offline / direct repository file: [`video.mp4`](video.mp4))*
 
 ---
 
