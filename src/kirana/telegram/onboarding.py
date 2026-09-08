@@ -959,6 +959,21 @@ async def handle_onboarding_step(
         inv_msg = format_inventory_message(store_repo, lang)
         if inv_msg:
             await msg.reply_text(inv_msg, parse_mode=ParseMode.HTML)
+
+        # Immediately upload snapshot to Telegram Cloud Vault so it survives container restarts
+        import os
+        backup_chat = os.environ.get("TELEGRAM_BACKUP_CHAT_ID")
+        if backup_chat and context and hasattr(context, "bot"):
+            try:
+                from ..services.backup import upload_backup_to_telegram
+                await upload_backup_to_telegram(
+                    context.bot,
+                    backup_chat,
+                    pin=True,
+                    caption_prefix=f"📦 #kirana_backup [New Store Provisioned: {tenant.store_name} ({tenant.store_code})]",
+                )
+            except Exception as exc:
+                logger.warning("Failed to upload immediate post-onboarding backup: %s", exc)
         return True
 
 
