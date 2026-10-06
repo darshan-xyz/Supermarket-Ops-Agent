@@ -1,4 +1,4 @@
-﻿"""Cryptographic password/PIN hashing, constant-time verification, and rate limiting."""
+"""Cryptographic password/PIN hashing, constant-time verification, and rate limiting."""
 
 from __future__ import annotations
 
@@ -22,8 +22,8 @@ class RateLimitStatus(NamedTuple):
 
 
 # In-memory rate limiting state keyed by chat_id or identifier
-# Map: chat_id -> list of failed timestamp floats
-_FAILED_ATTEMPTS: dict[int, list[float]] = {}
+# Map: key -> list of failed timestamp floats
+_FAILED_ATTEMPTS: dict[int | str, list[float]] = {}
 
 
 def hash_password(password: str) -> str:
@@ -68,7 +68,38 @@ def verify_password(password: str, stored_hash: str | None) -> bool:
         return False
 
 
-def check_pin_rate_limit(chat_id: int) -> RateLimitStatus:
+class RateLimiter:
+    """Sliding-window rate limiter for authentication attempts."""
+
+    def __init__(self, max_attempts: int = MAX_FAILED_ATTEMPTS, window_seconds: int = LOCKOUT_DURATION_SECONDS):
+        self.max_attempts = max_attempts
+        self.window_seconds = window_seconds
+        self._attempts: dict[str | int, list[float]] = {}
+
+    def is_allowed(self, key: str | int) -> bool:
+        now = time.time()
+        recent = [t for t in self._attempts.get(key, []) if now - t < self.window_seconds]
+        self._attempts[key] = recent
+        return len(recent) < self.max_attempts
+
+    def record_failure(self, key: str | int) -> None:
+        now = time.time()
+        attempts = self._attempts.setdefault(key, [])
+        attempts.append(now)
+
+    def record_success(self, key: str | int) -> None:
+        self._attempts.pop(key, None)
+
+    def lockout_remaining(self, key: str | int) -> int:
+        now = time.time()
+        recent = [t for t in self._attempts.get(key, []) if now - t < self.window_seconds]
+        if len(recent) >= self.max_attempts:
+            oldest = min(recent)
+            return max(0, int(self.window_seconds - (now - oldest)))
+        return 0
+
+
+def check_pin_rate_limit(chat_id: int | str) -> RateLimitStatus:
     """Check if the given chat_id is rate-limited / locked out due to repeated failed attempts."""
     now = time.time()
     attempts = _FAILED_ATTEMPTS.get(chat_id, [])
@@ -92,7 +123,7 @@ def check_pin_rate_limit(chat_id: int) -> RateLimitStatus:
     )
 
 
-def record_failed_attempt(chat_id: int) -> RateLimitStatus:
+def record_failed_attempt(chat_id: int | str) -> RateLimitStatus:
     """Record a failed PIN attempt and return current rate limit status."""
     now = time.time()
     attempts = _FAILED_ATTEMPTS.setdefault(chat_id, [])
@@ -100,6 +131,6 @@ def record_failed_attempt(chat_id: int) -> RateLimitStatus:
     return check_pin_rate_limit(chat_id)
 
 
-def reset_rate_limit(chat_id: int) -> None:
+def reset_rate_limit(chat_id: int | str) -> None:
     """Reset rate limit counter upon successful authentication."""
     _FAILED_ATTEMPTS.pop(chat_id, None)

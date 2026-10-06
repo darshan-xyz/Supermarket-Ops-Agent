@@ -59,8 +59,8 @@ from ..services.backup import (
 from ..security.password import check_pin_rate_limit, record_failed_attempt, reset_rate_limit
 from ..services.logo_service import validate_and_process_logo
 from ..tools.context import get_repo, init_context, take_output_files
+from ..web.app import create_web_app
 from .jobs import register_jobs
-from .web import HealthWebServer
 from .onboarding import (
     OnboardingStep,
     clear_onboarding_session,
@@ -1287,24 +1287,36 @@ async def _error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 async def _post_init(application: Application) -> None:
-    """Run boot state recovery and launch health web server on PORT."""
+    """Run boot state recovery and launch FastAPI admin web server on PORT."""
     if AUTO_RESTORE_ON_BOOT:
         try:
             await auto_restore_if_needed(application.bot)
         except Exception as exc:
             logger.warning("Error during boot auto-restore check: %s", exc)
 
-    # Start health HTTP server for keep-alive monitoring and cloud port binding
-    web_server = HealthWebServer(port=PORT)
-    await web_server.start()
-    application.bot_data["web_server"] = web_server
+    # Start FastAPI + Uvicorn server for health monitoring, Keep-Alive, and Admin Dashboard
+    import uvicorn
+
+    web_app = create_web_app(application)
+    config = uvicorn.Config(app=web_app, host="0.0.0.0", port=PORT, log_level="warning")
+    server = uvicorn.Server(config)
+    application.bot_data["web_server"] = server
+    server_task = asyncio.create_task(server.serve())
+    application.bot_data["web_server_task"] = server_task
+    logger.info("FastAPI Admin Dashboard & Keep-Alive server listening on PORT=%d", PORT)
 
 
 async def _post_shutdown(application: Application) -> None:
     """Graceful shutdown: stop web server, flush WAL checkpoints, and upload emergency backup."""
-    web_server = application.bot_data.get("web_server")
-    if web_server:
-        await web_server.stop()
+    server = application.bot_data.get("web_server")
+    if server:
+        server.should_exit = True
+    server_task = application.bot_data.get("web_server_task")
+    if server_task and not server_task.done():
+        try:
+            await asyncio.wait_for(server_task, timeout=3.0)
+        except Exception:
+            pass
 
     checkpoint_all_databases()
 

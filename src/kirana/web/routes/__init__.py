@@ -1,0 +1,1 @@
+"""Web Dashboard routes package."""

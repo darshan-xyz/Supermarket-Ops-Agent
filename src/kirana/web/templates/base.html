@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full bg-slate-50">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}Kirana Store Admin{% endblock %} · Supermarket Ops Agent</title>
+  
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            brand: {
+              50: '#f0fdf4',
+              100: '#dcfce7',
+              200: '#bbf7d0',
+              500: '#22c55e',
+              600: '#16a34a',
+              700: '#15803d',
+              800: '#166534',
+              900: '#14532d',
+            }
+          }
+        }
+      }
+    }
+  </script>
+
+  <!-- HTMX CDN -->
+  <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+  
+  <!-- Chart.js CDN (for Analytics) -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+
+  <style>
+    .htmx-indicator {
+      display: none;
+    }
+    .htmx-request .htmx-indicator,
+    .htmx-request.htmx-indicator {
+      display: inline-block;
+    }
+    @media print {
+      .no-print {
+        display: none !important;
+      }
+    }
+  </style>
+</head>
+<body class="h-full flex overflow-hidden text-slate-800">
+
+  <!-- Mobile Sidebar Backdrop -->
+  <div id="mobile-sidebar-backdrop" class="fixed inset-0 bg-slate-900/50 z-40 hidden md:hidden" onclick="toggleMobileSidebar()"></div>
+
+  <!-- Sidebar -->
+  <aside id="sidebar" class="fixed md:static inset-y-0 left-0 z-50 w-64 bg-slate-900 text-slate-100 flex flex-col transition-transform transform -translate-x-full md:translate-x-0 shrink-0">
+    <!-- Brand Header -->
+    <div class="h-16 flex items-center justify-between px-6 border-b border-slate-800 bg-slate-950/40">
+      <a href="/dashboard" class="flex items-center gap-3">
+        <div class="w-9 h-9 rounded-lg bg-brand-600 flex items-center justify-center text-white font-bold shadow-md shadow-brand-900/30">
+          <i data-lucide="shopping-cart" class="w-5 h-5"></i>
+        </div>
+        <div>
+          <h1 class="text-sm font-bold tracking-tight text-white leading-tight">Kirana Ops</h1>
+          <p class="text-xs text-brand-400 font-medium">Admin Co-Pilot</p>
+        </div>
+      </a>
+      <button class="md:hidden text-slate-400 hover:text-white" onclick="toggleMobileSidebar()">
+        <i data-lucide="x" class="w-5 h-5"></i>
+      </button>
+    </div>
+
+    <!-- Store Badge / Switcher Info -->
+    {% if ctx %}
+    <div class="px-5 py-3.5 mx-3 my-3 rounded-xl bg-slate-800/80 border border-slate-700/60 flex items-center gap-3">
+      <div class="w-8 h-8 rounded-full bg-brand-500/20 text-brand-400 flex items-center justify-center font-bold text-xs shrink-0">
+        🏪
+      </div>
+      <div class="min-w-0 flex-1">
+        <p class="text-xs font-semibold text-slate-200 truncate">{{ ctx.store_name }}</p>
+        <p class="text-[11px] font-mono text-brand-400 uppercase tracking-wider">{{ ctx.store_code }}</p>
+      </div>
+    </div>
+    {% endif %}
+
+    <!-- Navigation Links -->
+    <nav class="flex-1 px-3 py-2 space-y-1 overflow-y-auto text-sm font-medium">
+      <a href="/dashboard" class="flex items-center gap-3 px-3 py-2.5 rounded-lg transition {% if active_page == 'dashboard' %}bg-brand-600 text-white shadow-sm font-semibold{% else %}text-slate-300 hover:bg-slate-800 hover:text-white{% endif %}">
+        <i data-lucide="layout-dashboard" class="w-4 h-4"></i>
+        <span>Store Pulse</span>
+      </a>
+
+      <a href="/inventory" class="flex items-center gap-3 px-3 py-2.5 rounded-lg transition {% if active_page == 'inventory' %}bg-brand-600 text-white shadow-sm font-semibold{% else %}text-slate-300 hover:bg-slate-800 hover:text-white{% endif %}">
+        <i data-lucide="package" class="w-4 h-4"></i>
+        <span>Inventory & Stock</span>
+      </a>
+
+      <a href="/billing" class="flex items-center gap-3 px-3 py-2.5 rounded-lg transition {% if active_page == 'billing' %}bg-brand-600 text-white shadow-sm font-semibold{% else %}text-slate-300 hover:bg-slate-800 hover:text-white{% endif %}">
+        <i data-lucide="receipt" class="w-4 h-4"></i>
+        <span>Billing & Invoices</span>
+      </a>
+
+      <a href="/khata" class="flex items-center gap-3 px-3 py-2.5 rounded-lg transition {% if active_page == 'khata' %}bg-brand-600 text-white shadow-sm font-semibold{% else %}text-slate-300 hover:bg-slate-800 hover:text-white{% endif %}">
+        <i data-lucide="book-marked" class="w-4 h-4"></i>
+        <span>Khata (Customer Credit)</span>
+      </a>
+
+      <a href="/analytics" class="flex items-center gap-3 px-3 py-2.5 rounded-lg transition {% if active_page == 'analytics' %}bg-brand-600 text-white shadow-sm font-semibold{% else %}text-slate-300 hover:bg-slate-800 hover:text-white{% endif %}">
+        <i data-lucide="trending-up" class="w-4 h-4"></i>
+        <span>Sales Analytics</span>
+      </a>
+
+      <a href="/employees" class="flex items-center gap-3 px-3 py-2.5 rounded-lg transition {% if active_page == 'employees' %}bg-brand-600 text-white shadow-sm font-semibold{% else %}text-slate-300 hover:bg-slate-800 hover:text-white{% endif %}">
+        <i data-lucide="users" class="w-4 h-4"></i>
+        <span>Staff & Cashiers</span>
+      </a>
+
+      <a href="/settings" class="flex items-center gap-3 px-3 py-2.5 rounded-lg transition {% if active_page == 'settings' %}bg-brand-600 text-white shadow-sm font-semibold{% else %}text-slate-300 hover:bg-slate-800 hover:text-white{% endif %}">
+        <i data-lucide="settings" class="w-4 h-4"></i>
+        <span>Store Profile</span>
+      </a>
+    </nav>
+
+    <!-- Bottom Actions / Logout -->
+    <div class="p-3 border-t border-slate-800 bg-slate-950/30">
+      <a href="/logout" class="flex items-center gap-3 px-3 py-2 text-xs font-medium text-red-400 hover:text-red-300 hover:bg-red-500/10 rounded-lg transition">
+        <i data-lucide="log-out" class="w-4 h-4"></i>
+        <span>Sign Out ({{ ctx.store_code if ctx else '' }})</span>
+      </a>
+    </div>
+  </aside>
+
+  <!-- Main Content Wrapper -->
+  <div class="flex-1 flex flex-col min-w-0 overflow-hidden">
+    <!-- Top Header Bar -->
+    <header class="h-16 bg-white border-b border-slate-200 flex items-center justify-between px-4 md:px-8 shrink-0 z-10">
+      <div class="flex items-center gap-3">
+        <button class="md:hidden p-2 text-slate-600 hover:text-slate-900 rounded-lg hover:bg-slate-100" onclick="toggleMobileSidebar()">
+          <i data-lucide="menu" class="w-5 h-5"></i>
+        </button>
+        <h2 class="text-lg font-bold text-slate-800">{% block header_title %}Dashboard{% endblock %}</h2>
+      </div>
+
+      <!-- Live Indicators & Actions -->
+      <div class="flex items-center gap-3">
+        <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-50 text-emerald-700 border border-emerald-200">
+          <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+          Live Sync Active
+        </span>
+
+        {% block header_actions %}{% endblock %}
+      </div>
+    </header>
+
+    <!-- Flash Alert Container -->
+    <div id="alert-container" class="px-4 md:px-8 pt-4 empty:hidden"></div>
+
+    <!-- Page Body -->
+    <main class="flex-1 overflow-y-auto p-4 md:p-8 bg-slate-50">
+      {% block content %}{% endblock %}
+    </main>
+  </div>
+
+  <!-- Global Modal Container -->
+  <div id="modal-container"></div>
+
+  <script>
+    lucide.createIcons();
+    
+    function toggleMobileSidebar() {
+      const sidebar = document.getElementById('sidebar');
+      const backdrop = document.getElementById('mobile-sidebar-backdrop');
+      sidebar.classList.toggle('-translate-x-full');
+      backdrop.classList.toggle('hidden');
+    }
+
+    // Re-initialize lucide icons after HTMX swaps content
+    document.body.addEventListener('htmx:afterSwap', function() {
+      lucide.createIcons();
+    });
+  </script>
+</body>
+</html>

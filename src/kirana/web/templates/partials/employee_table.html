@@ -1,0 +1,62 @@
+<div id="employee-table-container" class="overflow-x-auto">
+  <table class="w-full text-left border-collapse">
+    <thead>
+      <tr class="border-b border-slate-200 bg-slate-50 text-[11px] font-bold text-slate-500 uppercase tracking-wider">
+        <th class="py-3 px-4">Staff Code</th>
+        <th class="py-3 px-4">Full Name</th>
+        <th class="py-3 px-4">Role</th>
+        <th class="py-3 px-4">Phone</th>
+        <th class="py-3 px-4 text-center">Status</th>
+        <th class="py-3 px-4 text-right">Actions</th>
+      </tr>
+    </thead>
+    <tbody class="divide-y divide-slate-100 text-xs font-medium text-slate-700">
+      {% if employees %}
+        {% for emp in employees %}
+        <tr class="hover:bg-slate-50/80 transition">
+          <td class="py-3 px-4 font-mono font-bold text-brand-700">{{ emp.emp_code }}</td>
+          <td class="py-3 px-4 font-bold text-slate-900">{{ emp.name }}</td>
+          <td class="py-3 px-4 capitalize text-slate-600">
+            <span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] bg-slate-100 text-slate-700 font-medium">
+              {{ emp.role }}
+            </span>
+          </td>
+          <td class="py-3 px-4 font-mono text-slate-500">{{ emp.phone or '-' }}</td>
+          <td class="py-3 px-4 text-center">
+            {% if emp.is_active %}
+            <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800">Active</span>
+            {% else %}
+            <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-200 text-slate-600">Deactivated</span>
+            {% endif %}
+          </td>
+          <td class="py-3 px-4 text-right">
+            {% if emp.is_active %}
+            <form
+              hx-post="/employees/deactivate"
+              hx-target="#employee-table-container"
+              hx-swap="outerHTML"
+              hx-confirm="Are you sure you want to deactivate {{ emp.name }}?"
+              class="inline-block"
+            >
+              <input type="hidden" name="emp_code" value="{{ emp.emp_code }}">
+              <button
+                type="submit"
+                class="px-2.5 py-1 text-[11px] font-semibold text-red-700 hover:bg-red-50 rounded-lg border border-red-200 transition"
+              >
+                Deactivate
+              </button>
+            </form>
+            {% else %}
+            <span class="text-[11px] text-slate-400">Inactive</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      {% else %}
+        <tr>
+          <td colspan="6" class="py-8 text-center text-slate-400">No staff members registered yet.</td>
+        </tr>
+      {% endif %}
+    </tbody>
+  </table>
+</div>

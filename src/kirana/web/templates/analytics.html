@@ -1,0 +1,176 @@
+{% extends "base.html" %}
+
+{% block title %}Sales Analytics{% endblock %}
+{% block header_title %}Sales Performance & Business Intelligence{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+
+  <!-- Date Range Filter Header -->
+  <div class="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex flex-col sm:flex-row items-center justify-between gap-4">
+    <div class="flex items-center gap-2">
+      <span class="text-xs font-bold text-slate-700">Analytics Period:</span>
+      <span class="px-3 py-1 rounded-lg bg-slate-100 text-xs font-mono font-bold text-slate-800">{{ start_date }} to {{ end_date }}</span>
+    </div>
+
+    <form method="GET" action="/analytics" class="flex items-center gap-2">
+      <input
+        type="date"
+        name="start"
+        value="{{ start_date }}"
+        class="px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-medium"
+      />
+      <span class="text-xs text-slate-400">to</span>
+      <input
+        type="date"
+        name="end"
+        value="{{ end_date }}"
+        class="px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-medium"
+      />
+      <button
+        type="submit"
+        class="px-3 py-1.5 bg-brand-600 hover:bg-brand-500 text-white rounded-lg text-xs font-bold transition"
+      >
+        Update View
+      </button>
+    </form>
+  </div>
+
+  <!-- Key Metrics for Selected Range -->
+  <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+    <div class="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
+      <p class="text-[11px] font-semibold text-slate-500 uppercase">Gross Sales Revenue</p>
+      <h3 class="text-2xl font-black text-slate-900 mt-2">₹{{ "%.2f"|format(sales_report.gross_sales_paise / 100) }}</h3>
+    </div>
+
+    <div class="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
+      <p class="text-[11px] font-semibold text-slate-500 uppercase">Total Invoices Finalized</p>
+      <h3 class="text-2xl font-black text-slate-900 mt-2">{{ sales_report.bill_count }} Bills</h3>
+    </div>
+
+    <div class="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
+      <p class="text-[11px] font-semibold text-slate-500 uppercase">Total GST Output Tax</p>
+      <h3 class="text-2xl font-black text-slate-900 mt-2">₹{{ "%.2f"|format(sales_report.total_tax_paise / 100) }}</h3>
+    </div>
+
+    <div class="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
+      <p class="text-[11px] font-semibold text-slate-500 uppercase">Average Order Value</p>
+      <h3 class="text-2xl font-black text-brand-700 mt-2">
+        {% if sales_report.bill_count > 0 %}
+          ₹{{ "%.2f"|format((sales_report.gross_sales_paise / sales_report.bill_count) / 100) }}
+        {% else %}
+          ₹0.00
+        {% endif %}
+      </h3>
+    </div>
+  </div>
+
+  <!-- Interactive Revenue Trend Chart (Chart.js) -->
+  <div class="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
+    <div class="flex items-center justify-between mb-4">
+      <h4 class="text-sm font-bold text-slate-800 flex items-center gap-2">
+        <i data-lucide="line-chart" class="w-4 h-4 text-brand-600"></i>
+        <span>Daily Revenue Trend</span>
+      </h4>
+    </div>
+    <div class="h-64 w-full">
+      <canvas id="revenueChart"></canvas>
+    </div>
+  </div>
+
+  <!-- Top Items Sold in Period -->
+  <div class="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+    <div class="p-4 border-b border-slate-100">
+      <h4 class="text-sm font-bold text-slate-800 flex items-center gap-2">
+        <i data-lucide="award" class="w-4 h-4 text-orange-500"></i>
+        <span>Highest Revenue Contributing Products</span>
+      </h4>
+    </div>
+
+    <div class="overflow-x-auto">
+      <table class="w-full text-left text-xs border-collapse">
+        <thead>
+          <tr class="border-b border-slate-200 bg-slate-50 text-[10px] font-bold text-slate-500 uppercase">
+            <th class="py-2.5 px-4">Rank</th>
+            <th class="py-2.5 px-4">Product Name</th>
+            <th class="py-2.5 px-4 text-right">Units Sold</th>
+            <th class="py-2.5 px-4 text-right">Bills Included</th>
+            <th class="py-2.5 px-4 text-right">Total Revenue</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-slate-100 font-medium text-slate-700">
+          {% if sales_report.top_items %}
+            {% for item in sales_report.top_items %}
+            <tr>
+              <td class="py-2.5 px-4 font-bold text-slate-400">#{{ loop.index }}</td>
+              <td class="py-2.5 px-4 font-bold text-slate-900">{{ item.name }}</td>
+              <td class="py-2.5 px-4 text-right font-mono">{{ item.qty_display }}</td>
+              <td class="py-2.5 px-4 text-right text-slate-500">{{ item.count }}</td>
+              <td class="py-2.5 px-4 text-right font-mono font-bold text-slate-900">₹{{ "%.2f"|format(item.revenue_paise / 100) }}</td>
+            </tr>
+            {% endfor %}
+          {% else %}
+            <tr>
+              <td colspan="5" class="py-8 text-center text-slate-400">No product sales in selected period.</td>
+            </tr>
+          {% endif %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+</div>
+
+<script>
+  // Setup Chart.js revenue trend
+  const ctx = document.getElementById('revenueChart').getContext('2d');
+  const labels = {{ chart_labels | tojson }};
+  const dataValues = {{ chart_values | tojson }};
+
+  new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: labels,
+      datasets: [{
+        label: 'Gross Revenue (₹)',
+        data: dataValues,
+        borderColor: '#16a34a',
+        backgroundColor: 'rgba(22, 163, 74, 0.08)',
+        fill: true,
+        tension: 0.35,
+        pointBackgroundColor: '#16a34a',
+        pointBorderColor: '#ffffff',
+        pointRadius: 4,
+        pointHoverRadius: 6,
+        borderWidth: 2.5
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      scales: {
+        y: {
+          beginAtZero: true,
+          grid: { color: '#f1f5f9' },
+          ticks: {
+            callback: function(value) { return '₹' + value; },
+            font: { size: 11 }
+          }
+        },
+        x: {
+          grid: { display: false },
+          ticks: { font: { size: 11 } }
+        }
+      },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: function(context) { return ' Revenue: ₹' + context.parsed.y.toFixed(2); }
+          }
+        }
+      }
+    }
+  });
+</script>
+{% endblock %}

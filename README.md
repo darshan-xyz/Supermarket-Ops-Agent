@@ -3,16 +3,17 @@
 <div align="center">
 
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://python.org)
-[![Tests](https://img.shields.io/badge/Tests-192%20Passing-22C55E?style=flat-square&logo=pytest&logoColor=white)](https://docs.pytest.org)
+[![Tests](https://img.shields.io/badge/Tests-206%20Passing-22C55E?style=flat-square&logo=pytest&logoColor=white)](https://docs.pytest.org)
+[![Admin Dashboard](https://img.shields.io/badge/FastAPI-Admin%20Web%20Dashboard-009688?style=flat-square&logo=fastapi&logoColor=white)](src/kirana/web)
 [![LLM](https://img.shields.io/badge/Gemini-3.6%20Flash-4285F4?style=flat-square&logo=google&logoColor=white)](https://ai.google.dev)
 [![Database](https://img.shields.io/badge/SQLite-WAL%20Multi--Tenant-003B57?style=flat-square&logo=sqlite&logoColor=white)](https://sqlite.org)
 [![Telegram](https://img.shields.io/badge/Telegram-Bot%20API-26A5E4?style=flat-square&logo=telegram&logoColor=white)](https://t.me/Marketopsagentbot)
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?style=flat-square&logo=docker&logoColor=white)](Dockerfile)
 [![License](https://img.shields.io/badge/License-MIT-F59E0B?style=flat-square)](LICENSE)
 
-**An autonomous, multi-tenant conversational operations system for Indian supermarkets and Kirana stores built on Google Gemini.**
+**An autonomous, multi-tenant conversational operations system for Indian supermarkets and Kirana stores built on Google Gemini with a real-time FastAPI + HTMX Admin Web Dashboard.**
 
-[Live Telegram Bot (@Marketopsagentbot)](https://t.me/Marketopsagentbot) • [Demo Video](#demo-video) • [System Architecture](#system-architecture) • [Control Loop](#agent-harness--control-loop-architecture) • [Skill Playbooks](#skill-playbooks-architecture--tool-design) • [The 9 Hard Parts](#technical-invariants--the-9-hard-parts) • [PDF Stretch Goals (8/8)](#pdf-stretch-goals-implemented-all-8-completed) • [Standout Features Beyond PDF](#standout-features-built-beyond-the-pdf-specification) • [Tool Catalog (36 Tools)](#tool-catalog-36-tools) • [Multilingual Matrix](#multilingual-catalog-alias-resolution-matrix) • [Artifact Engines](#artifact-generation-engines) • [Quickstart](#quickstart--deployment) • [192 Tests](#automated-verification-192-tests)
+[Live Telegram Bot (@Marketopsagentbot)](https://t.me/Marketopsagentbot) • [Demo Video](#demo-video) • [Admin Web Dashboard](#11-production-grade-fastapi--htmx-admin-web-dashboard) • [System Architecture](#system-architecture) • [Control Loop](#agent-harness--control-loop-architecture) • [Skill Playbooks](#skill-playbooks-architecture--tool-design) • [The 9 Hard Parts](#technical-invariants--the-9-hard-parts) • [PDF Stretch Goals (8/8)](#pdf-stretch-goals-implemented-all-8-completed) • [Standout Features Beyond PDF](#standout-features-built-beyond-the-pdf-specification) • [Tool Catalog (36 Tools)](#tool-catalog-36-tools) • [Multilingual Matrix](#multilingual-catalog-alias-resolution-matrix) • [Artifact Engines](#artifact-generation-engines) • [Quickstart](#quickstart--deployment) • [206 Tests](#automated-verification-206-tests)
 
 </div>
 
@@ -633,9 +634,21 @@ The assignment specification defines a single-store, single-database prototype. 
 * **Module**: `src/kirana/services/logo_service.py`
 * **The Capability**: Handles camera uploads of store logos. Inspects magic bytes to prevent arbitrary file upload vulnerabilities, normalizes EXIF orientation tags, preserves RGBA alpha transparency, and downsamples images to 300 DPI for sharp thermal receipt and PDF printing.
 
-### 11. Native Asyncio Web Gateway & Uptime Server
-* **Module**: `src/kirana/telegram/web.py`
-* **The Capability**: A non-blocking asynchronous HTTP server running concurrently on port 10000 alongside the Telegram bot long-poll. Exposes `/health` and `/ping` for zero-downtime cloud hosting health checks (Render, Railway, UptimeRobot) and provides an operational JSON dashboard reporting uptime, tenant count, and memory state.
+### 11. Production-Grade FastAPI + HTMX Admin Web Dashboard
+* **Module**: `src/kirana/web/` (`app.py`, `auth.py`, `routes/`, `templates/`)
+* **Single-Process Coexistence**: Runs natively inside the **exact same `asyncio` event loop** alongside `python-telegram-bot` on Render's 512MB free tier via Uvicorn on `PORT=10000` with only ~30MB RAM overhead and zero Node.js/npm pipeline.
+* **Store Owner Cryptographic Auth**: Login using unique **Store Code** + **Owner PIN** with PBKDF2 verification, sliding-window rate limiting, and signed `HttpOnly`, `SameSite=Lax` session cookies (`itsdangerous`).
+* **Physical Multi-Tenant Isolation**: Zero cross-tenant data leakage risk (no IDOR) — queries physically route to the tenant's isolated SQLite database file.
+* **8 Dedicated Dashboard Views**:
+  1. **Store Pulse (`/dashboard`)**: Live KPI metrics (Today's revenue, bill count, AOV, cash/UPI/khata split) auto-refreshing every 30s via HTMX polling.
+  2. **Inventory Management (`/inventory`)**: Searchable catalog table, stock level badges, reorder threshold alerts, FEFO expiry badges, stock inward modal, and CSV export.
+  3. **Billing History & Invoices (`/billing`)**: Full invoice feed, 58mm thermal receipt preview modal, statutory GST tax slab table, and CSV downloads.
+  4. **Khata Credit Ledger (`/khata`)**: Outstanding debtor directory, ledger statement modal, repayment recording modal, and 1-click WhatsApp reminder deep-links.
+  5. **Sales Analytics (`/analytics`)**: Date range filter, key revenue metrics, interactive Chart.js trend graph, and top-selling products table.
+  6. **Staff Management (`/employees`)**: Staff roster, new employee registration, cashier biller attribution, and soft-deactivation.
+  7. **Store Profile & Settings (`/settings`)**: Edit trade address, GSTIN, phone, invoice prefix, and rotate owner security PIN.
+  8. **Keep-Alive & Discovery (`/health`, `/ping`, `/`)**: Answers UptimeRobot pings in <2ms to keep Render awake.
+* **JSON REST API v1 (`/api/v1/`)**: Headless JSON endpoints for `/summary`, `/inventory`, and `/khata` ready for future mobile apps.
 
 ### 12. Protected Store Offboarding & Password-Authorized Deletion
 * **Test Verification**: `tests/test_delete_account.py`
@@ -645,9 +658,9 @@ The assignment specification defines a single-store, single-database prototype. 
 * **Module**: `src/kirana/artifacts/sales_report_pdf.py`
 * **The Capability**: In addition to individual POS invoices, the system generates an **Executive Daily Operations Report PDF** featuring revenue KPI cards, payment mode breakdowns, statutory GST collection tables, and category volume contribution charts.
 
-### 14. Comprehensive 192-Test Automated Test Suite
-* **The Coverage**: 192 tests running across 20 test modules in ~73 seconds (100% passing).
-* **Test Depth**: Validates financial rounding down to the single paise, FEFO batch allocations, concurrent SQLite writer locks, OTP hashing, PBKDF2 password authentication, brute-force lockouts, employee CRUD, prompt injection defenses, and vernacular entity extraction.
+### 14. Comprehensive 206-Test Automated Test Suite
+* **The Coverage**: 206 tests running across 22 test modules (100% passing).
+* **Test Depth**: Validates financial rounding down to the single paise, FEFO batch allocations, concurrent SQLite writer locks, OTP hashing, PBKDF2 password authentication, brute-force lockouts, employee CRUD, web dashboard auth, multi-tenant physical isolation, prompt injection defenses, and vernacular entity extraction.
 
 ---
 
@@ -957,9 +970,9 @@ docker-compose up --build -d
 
 ---
 
-## Automated Verification (192 Tests)
+## Automated Verification (206 Tests)
 
-The test suite validates financial calculations, concurrency locks, FEFO allocations, multi-tenant isolation, artifact generators, employee CRUD, PBKDF2 password security, rate-limiting, and vernacular NLP:
+The test suite validates financial calculations, concurrency locks, FEFO allocations, multi-tenant isolation, artifact generators, employee CRUD, PBKDF2 password security, rate-limiting, FastAPI admin dashboard endpoints, physical tenant isolation, and vernacular NLP:
 
 ```bash
 uv run pytest -v
@@ -971,30 +984,32 @@ platform win32 -- Python 3.11.9, pytest-9.1.1, pluggy-1.6.0
 rootdir: D:\projects\Supermarket-Ops-Agent
 configfile: pyproject.toml
 testpaths: tests
-collected 192 items
+collected 206 items
 
 tests\test_artifacts.py .....                                            [  2%]
 tests\test_backup_restore.py ....                                        [  4%]
 tests\test_concurrency.py ..                                             [  5%]
 tests\test_delete_account.py ........                                    [  9%]
-tests\test_fefo.py .......                                               [ 13%]
-tests\test_gemini_tools.py ...                                           [ 15%]
-tests\test_gst.py ..........                                             [ 20%]
-tests\test_guardrails.py ..........................                      [ 33%]
-tests\test_idempotency.py ..                                             [ 34%]
-tests\test_logo_service.py .........                                     [ 39%]
-tests\test_money.py .....                                                [ 42%]
-tests\test_multi_tenant_auth.py ............                             [ 48%]
-tests\test_production_e2e.py ....................                        [ 58%]
-tests\test_repository.py ............................                    [ 73%]
-tests\test_scheduler.py ....                                             [ 75%]
-tests\test_tamil.py .....                                                [ 78%]
-tests\test_tools.py ...............................                      [ 94%]
-tests\test_units.py ......                                               [ 97%]
-tests\test_variants.py ....                                              [ 99%]
+tests\test_fefo.py .......                                               [ 12%]
+tests\test_gemini_tools.py ...                                           [ 14%]
+tests\test_gst.py ..........                                             [ 18%]
+tests\test_guardrails.py ..........................                      [ 31%]
+tests\test_idempotency.py ..                                             [ 32%]
+tests\test_logo_service.py .........                                     [ 36%]
+tests\test_money.py .....                                                [ 39%]
+tests\test_multi_tenant_auth.py ............                             [ 45%]
+tests\test_production_e2e.py ....................                        [ 54%]
+tests\test_repository.py ............................                    [ 68%]
+tests\test_scheduler.py ....                                             [ 70%]
+tests\test_tamil.py .....                                                [ 72%]
+tests\test_tools.py ...............................                      [ 87%]
+tests\test_units.py ......                                               [ 90%]
+tests\test_variants.py ....                                              [ 92%]
+tests\test_web_auth.py ...                                               [ 94%]
+tests\test_web_dashboard.py ...........                                  [ 99%]
 tests\test_web_server.py .                                               [100%]
 
-======================= 192 passed in 73.84s (0:01:13) ========================
+======================= 206 passed in 126s (0:02:06) ========================
 ```
 
 ---
@@ -1007,7 +1022,7 @@ Supermarket-Ops-Agent/
 ├── docs/                    # Architectural blueprints and system designs
 │   └── ARCHITECTURE_PLAN.md # Baseline system specification
 ├── scripts/                 # Operations and simulation scripts
-│   ├── demo.py              # Automated live agent 4-5 min walkthrough script
+│   ├── demo.py              # Automated live agent walkthrough script
 │   ├── seed.py              # Realistic catalog and 7-day sales seeder
 │   └── sim_chat.py          # Terminal interactive simulator
 ├── skills/                  # Domain operational agent skills
@@ -1022,12 +1037,19 @@ Supermarket-Ops-Agent/
 │   ├── artifacts/           # ReportLab PDF and PowerPoint deck engines
 │   ├── db/                  # SQLite WAL repository and multi-tenant master
 │   ├── domain/              # Pure business logic (Money, Units, GST, Variants, FEFO)
+│   ├── security/            # PBKDF2 cryptography and rate limiting
 │   ├── services/            # Backup/restore, logo service, maintenance
-│   ├── telegram/            # Bot adapter, onboarding, web server, and scheduler
-│   └── tools/               # 32 in-process domain tools and registry
-├── tests/                   # 184 comprehensive automated tests
+│   ├── telegram/            # Bot adapter, onboarding, and scheduler
+│   ├── tools/               # 36 in-process domain tools and registry
+│   └── web/                 # FastAPI + HTMX Admin Web Dashboard
+│       ├── app.py           # Application factory & router aggregator
+│       ├── auth.py          # Signed cookie session manager & dependencies
+│       ├── routes/          # Domain routes (dashboard, inventory, billing, etc.)
+│       └── templates/       # Jinja2 + Tailwind + HTMX UI templates & partials
+├── tests/                   # 206 comprehensive automated tests across 22 modules
 ├── Dockerfile               # Production container definition
 ├── docker-compose.yml       # Container orchestration
+```
 ├── pyproject.toml           # Project dependencies and tool configurations
 └── render.yaml              # Cloud deployment specification
 ```

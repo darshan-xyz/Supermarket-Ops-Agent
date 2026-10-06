@@ -1,0 +1,124 @@
+{% extends "base.html" %}
+
+{% block title %}Store Pulse{% endblock %}
+{% block header_title %}Store Pulse · Live Operational Overview{% endblock %}
+
+{% block header_actions %}
+<a href="/inventory" class="inline-flex items-center gap-2 px-3 py-1.5 text-xs font-semibold rounded-lg bg-brand-600 text-white hover:bg-brand-500 shadow-sm transition">
+  <i data-lucide="plus" class="w-3.5 h-3.5"></i>
+  <span>Stock Inward</span>
+</a>
+{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+
+  <!-- Include Dynamic Metric Cards -->
+  {% include "partials/dashboard_cards.html" %}
+
+  <!-- Critical Operational Alerts Row -->
+  <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+    <!-- Low Stock Reorder Alerts -->
+    <div class="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
+      <div class="flex items-center justify-between mb-4">
+        <h4 class="text-sm font-bold text-slate-800 flex items-center gap-2">
+          <i data-lucide="alert-triangle" class="w-4 h-4 text-amber-500"></i>
+          <span>Stock Replenishment Watch</span>
+        </h4>
+        <a href="/inventory" class="text-xs text-brand-600 hover:text-brand-700 font-semibold">View All ({{ low_stock_items|length }})</a>
+      </div>
+
+      {% if low_stock_items %}
+      <div class="divide-y divide-slate-100">
+        {% for p in low_stock_items[:5] %}
+        <div class="py-3 flex items-center justify-between">
+          <div>
+            <p class="text-xs font-semibold text-slate-800">{{ p.name }}</p>
+            <p class="text-[11px] text-slate-400">Reorder Threshold: {{ p.reorder_display }}</p>
+          </div>
+          <div class="text-right">
+            <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-bold {% if p.stock_base == 0 %}bg-red-50 text-red-700 border border-red-200{% else %}bg-amber-50 text-amber-700 border border-amber-200{% endif %}">
+              {{ p.stock_display }} left
+            </span>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+      <div class="py-6 text-center text-xs text-slate-400">
+        <i data-lucide="check-circle-2" class="w-8 h-8 mx-auto text-emerald-400 mb-2"></i>
+        All catalog products have sufficient stock levels.
+      </div>
+      {% endif %}
+    </div>
+
+    <!-- Perishable Expiry Tracker (FEFO) -->
+    <div class="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
+      <div class="flex items-center justify-between mb-4">
+        <h4 class="text-sm font-bold text-slate-800 flex items-center gap-2">
+          <i data-lucide="clock" class="w-4 h-4 text-purple-600"></i>
+          <span>Perishable Expiry Watch (Next 7 Days)</span>
+        </h4>
+        <span class="text-xs text-slate-400 font-medium">FEFO Guard</span>
+      </div>
+
+      {% if expiring_batches %}
+      <div class="divide-y divide-slate-100">
+        {% for b in expiring_batches[:5] %}
+        <div class="py-3 flex items-center justify-between">
+          <div>
+            <p class="text-xs font-semibold text-slate-800">{{ b.name }}</p>
+            <p class="text-[11px] text-slate-400">Batch Expiry: {{ b.expiry }}</p>
+          </div>
+          <div class="text-right">
+            {% if b.days_left <= 0 %}
+            <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-bold bg-red-100 text-red-800">
+              Expired
+            </span>
+            {% elif b.days_left <= 3 %}
+            <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-bold bg-red-50 text-red-700">
+              {{ b.days_left }}d left ({{ b.qty_display }})
+            </span>
+            {% else %}
+            <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-bold bg-amber-50 text-amber-700">
+              {{ b.days_left }}d left ({{ b.qty_display }})
+            </span>
+            {% endif %}
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+      <div class="py-6 text-center text-xs text-slate-400">
+        <i data-lucide="shield-check" class="w-8 h-8 mx-auto text-emerald-400 mb-2"></i>
+        No batches expiring within the next 7 days.
+      </div>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- Store Information & Quick Telegram Actions -->
+  <div class="bg-gradient-to-r from-slate-900 to-slate-800 rounded-2xl p-6 text-white flex flex-col md:flex-row items-center justify-between gap-6 shadow-md">
+    <div class="space-y-1">
+      <div class="flex items-center gap-2">
+        <span class="px-2 py-0.5 rounded bg-brand-500/20 text-brand-400 font-mono text-xs font-bold">{{ ctx.store_code }}</span>
+        <h4 class="text-lg font-bold text-white">{{ ctx.store_name }}</h4>
+      </div>
+      <p class="text-xs text-slate-300">
+        Managed via Telegram Bot: <strong class="text-brand-300">@Marketopsagentbot</strong> · Owner: {{ ctx.owner_name }}
+      </p>
+    </div>
+    <div class="flex items-center gap-3">
+      <a href="/billing" class="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded-xl text-xs font-semibold transition flex items-center gap-2">
+        <i data-lucide="file-text" class="w-4 h-4"></i>
+        <span>View Invoices</span>
+      </a>
+      <a href="/khata" class="px-4 py-2 bg-brand-600 hover:bg-brand-500 text-white rounded-xl text-xs font-bold transition flex items-center gap-2">
+        <i data-lucide="send" class="w-4 h-4"></i>
+        <span>Send Khata Reminders</span>
+      </a>
+    </div>
+  </div>
+
+</div>
+{% endblock %}

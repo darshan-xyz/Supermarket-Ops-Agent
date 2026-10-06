@@ -1,0 +1,48 @@
+<div id="gst-report-section" class="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm">
+  <div class="flex items-center justify-between mb-4">
+    <h4 class="text-sm font-bold text-slate-800 flex items-center gap-2">
+      <i data-lucide="calculator" class="w-4 h-4 text-brand-600"></i>
+      <span>GST Tax Slab Summary ({{ gst_report.start }} to {{ gst_report.end }})</span>
+    </h4>
+    <a
+      href="/billing/export/gst-csv?start={{ gst_report.start }}&end={{ gst_report.end }}"
+      class="text-xs text-brand-600 hover:text-brand-700 font-semibold"
+    >
+      Export GSTR CSV &rarr;
+    </a>
+  </div>
+
+  <div class="overflow-x-auto">
+    <table class="w-full text-left text-xs border-collapse">
+      <thead>
+        <tr class="border-b border-slate-200 text-slate-500 uppercase text-[10px] font-bold">
+          <th class="py-2.5 px-3">Tax Slab</th>
+          <th class="py-2.5 px-3 text-right">Taxable Turnover</th>
+          <th class="py-2.5 px-3 text-right">CGST</th>
+          <th class="py-2.5 px-3 text-right">SGST</th>
+          <th class="py-2.5 px-3 text-right">Total Tax</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-slate-100 font-medium text-slate-700">
+        {% for s in gst_report.by_slab %}
+        <tr>
+          <td class="py-2.5 px-3 font-bold">{{ s.gst_rate }}% GST</td>
+          <td class="py-2.5 px-3 text-right font-mono">₹{{ "%.2f"|format(s.taxable_paise / 100) }}</td>
+          <td class="py-2.5 px-3 text-right font-mono text-slate-500">₹{{ "%.2f"|format(s.cgst_paise / 100) }}</td>
+          <td class="py-2.5 px-3 text-right font-mono text-slate-500">₹{{ "%.2f"|format(s.sgst_paise / 100) }}</td>
+          <td class="py-2.5 px-3 text-right font-mono font-bold text-slate-900">₹{{ "%.2f"|format((s.cgst_paise + s.sgst_paise) / 100) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+      <tfoot>
+        <tr class="border-t-2 border-slate-300 font-bold text-slate-900 bg-slate-50/50">
+          <td class="py-2.5 px-3">Total Tax Collections</td>
+          <td class="py-2.5 px-3 text-right font-mono">—</td>
+          <td class="py-2.5 px-3 text-right font-mono">₹{{ "%.2f"|format(gst_report.cgst_paise / 100) }}</td>
+          <td class="py-2.5 px-3 text-right font-mono">₹{{ "%.2f"|format(gst_report.sgst_paise / 100) }}</td>
+          <td class="py-2.5 px-3 text-right font-mono text-brand-700">₹{{ "%.2f"|format(gst_report.total_tax_paise / 100) }}</td>
+        </tr>
+      </tfoot>
+    </table>
+  </div>
+</div>

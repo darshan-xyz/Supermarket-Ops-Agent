@@ -303,6 +303,14 @@ class MasterRegistry:
         )
         return self._tenant_from_row(row) if row else None
 
+    def list_all_tenants(self, active_only: bool = True) -> list[Tenant]:
+        """Return all registered tenants in the master directory."""
+        if active_only:
+            rows = self.db.query_all("SELECT * FROM tenants WHERE status = 'active' ORDER BY id ASC")
+        else:
+            rows = self.db.query_all("SELECT * FROM tenants ORDER BY id ASC")
+        return [self._tenant_from_row(r) for r in rows]
+
     def link_chat_to_tenant(
         self,
         chat_id: int,

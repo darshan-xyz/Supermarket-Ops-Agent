@@ -87,6 +87,16 @@ AUTO_RESTORE_ON_BOOT: bool = os.environ.get("BACKUP_AUTO_RESTORE_ON_BOOT", "1").
     "yes",
 )
 
+# --- Admin Web Dashboard ---
+SECRET_KEY: str = os.environ.get("KIRANA_SECRET_KEY", "kirana-secret-key-change-in-prod-7904917399")
+SESSION_MAX_AGE: int = int(os.environ.get("KIRANA_SESSION_MAX_AGE", str(86400 * 7)))  # 7 days
+DASHBOARD_ENABLED: bool = os.environ.get("KIRANA_DASHBOARD_ENABLED", "1").lower() in (
+    "1",
+    "true",
+    "yes",
+)
+
+
 
 def ensure_dirs() -> None:
     """Create the data and artifact directories if missing."""

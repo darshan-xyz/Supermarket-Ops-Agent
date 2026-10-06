@@ -1,0 +1,97 @@
+<div id="bill-feed-container" class="overflow-x-auto">
+  <table class="w-full text-left border-collapse">
+    <thead>
+      <tr class="border-b border-slate-200 bg-slate-50 text-[11px] font-bold text-slate-500 uppercase tracking-wider">
+        <th class="py-3 px-4">Invoice #</th>
+        <th class="py-3 px-4">Date & Time</th>
+        <th class="py-3 px-4">Customer</th>
+        <th class="py-3 px-4">Cashier</th>
+        <th class="py-3 px-4">Payment</th>
+        <th class="py-3 px-4 text-right">Taxable</th>
+        <th class="py-3 px-4 text-right">GST (CGST+SGST)</th>
+        <th class="py-3 px-4 text-right">Total Amount</th>
+        <th class="py-3 px-4 text-center">Status</th>
+        <th class="py-3 px-4 text-right">Actions</th>
+      </tr>
+    </thead>
+    <tbody class="divide-y divide-slate-100 text-xs font-medium text-slate-700">
+      {% if bills %}
+        {% for b in bills %}
+        <tr class="hover:bg-slate-50/80 transition {% if b.status == 'void' %}opacity-60 bg-red-50/30{% endif %}">
+          <td class="py-3 px-4 font-mono font-bold text-slate-900">
+            {{ b.invoice_no or ('Draft #' ~ b.id) }}
+          </td>
+
+          <td class="py-3 px-4 text-slate-500">
+            {{ b.created_at[:16].replace('T', ' ') }}
+          </td>
+
+          <td class="py-3 px-4">
+            <span class="font-semibold text-slate-800">{{ b.customer_name or 'Walk-in' }}</span>
+            {% if b.customer_phone %}
+            <span class="block text-[10px] text-slate-400 font-mono">{{ b.customer_phone }}</span>
+            {% endif %}
+          </td>
+
+          <td class="py-3 px-4 text-slate-600">
+            {{ b.biller_name or 'Owner' }}
+          </td>
+
+          <td class="py-3 px-4">
+            {% if b.payment_mode == 'cash' %}
+            <span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-bold bg-emerald-50 text-emerald-700">Cash</span>
+            {% elif b.payment_mode == 'upi' %}
+            <span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-bold bg-blue-50 text-blue-700">UPI</span>
+            {% elif b.payment_mode == 'khata' %}
+            <span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-bold bg-amber-50 text-amber-700">Khata</span>
+            {% else %}
+            <span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-bold bg-slate-100 text-slate-700">{{ b.payment_mode or 'Pending' }}</span>
+            {% endif %}
+          </td>
+
+          <td class="py-3 px-4 text-right font-mono text-slate-600">₹{{ "%.2f"|format(b.subtotal_paise / 100) }}</td>
+
+          <td class="py-3 px-4 text-right font-mono text-slate-600">₹{{ "%.2f"|format((b.cgst_paise + b.sgst_paise) / 100) }}</td>
+
+          <td class="py-3 px-4 text-right font-mono font-bold text-slate-900">₹{{ "%.2f"|format(b.total_paise / 100) }}</td>
+
+          <td class="py-3 px-4 text-center">
+            {% if b.status == 'finalized' %}
+            <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800">
+              Finalized
+            </span>
+            {% elif b.status == 'void' %}
+            <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-red-100 text-red-800">
+              Voided
+            </span>
+            {% else %}
+            <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-600">
+              {{ b.status }}
+            </span>
+            {% endif %}
+          </td>
+
+          <td class="py-3 px-4 text-right">
+            <div class="flex items-center justify-end gap-1.5">
+              <button
+                hx-get="/billing/modal/receipt?bill_id={{ b.id }}"
+                hx-target="#modal-container"
+                class="px-2 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-100 rounded border border-slate-200 transition"
+              >
+                Receipt
+              </button>
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+      {% else %}
+        <tr>
+          <td colspan="10" class="py-12 text-center text-slate-400">
+            <i data-lucide="receipt" class="w-8 h-8 mx-auto text-slate-300 mb-2"></i>
+            No invoices recorded yet.
+          </td>
+        </tr>
+      {% endif %}
+    </tbody>
+  </table>
+</div>

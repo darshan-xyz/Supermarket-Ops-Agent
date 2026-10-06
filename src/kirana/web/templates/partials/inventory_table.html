@@ -1,0 +1,85 @@
+<div id="inventory-table-container" class="overflow-x-auto">
+  <table class="w-full text-left border-collapse">
+    <thead>
+      <tr class="border-b border-slate-200 bg-slate-50 text-[11px] font-bold text-slate-500 uppercase tracking-wider">
+        <th class="py-3 px-4">SKU / Name</th>
+        <th class="py-3 px-4">Unit</th>
+        <th class="py-3 px-4">GST Slab</th>
+        <th class="py-3 px-4 text-right">Cost Price</th>
+        <th class="py-3 px-4 text-right">Selling Price</th>
+        <th class="py-3 px-4 text-right">MRP</th>
+        <th class="py-3 px-4 text-center">Stock Level</th>
+        <th class="py-3 px-4 text-right">Actions</th>
+      </tr>
+    </thead>
+    <tbody class="divide-y divide-slate-100 text-xs font-medium text-slate-700">
+      {% if products %}
+        {% for p in products %}
+        <tr class="hover:bg-slate-50/80 transition group">
+          <td class="py-3 px-4">
+            <div class="flex items-center gap-2">
+              <span class="font-bold text-slate-900">{{ p.name }}</span>
+              {% if p.brand %}
+              <span class="px-1.5 py-0.5 rounded bg-slate-100 text-[10px] text-slate-500">{{ p.brand }}</span>
+              {% endif %}
+              {% if p.is_loose %}
+              <span class="px-1.5 py-0.5 rounded bg-amber-50 text-[10px] font-bold text-amber-700 border border-amber-200">Loose</span>
+              {% endif %}
+            </div>
+            {% if p.hsn_code %}
+            <span class="text-[10px] text-slate-400 font-mono">HSN: {{ p.hsn_code }}</span>
+            {% endif %}
+          </td>
+
+          <td class="py-3 px-4 text-slate-600 uppercase font-mono text-[11px]">{{ p.unit }}</td>
+
+          <td class="py-3 px-4">
+            <span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-bold bg-slate-100 text-slate-700">
+              {{ p.gst_rate }}%
+            </span>
+          </td>
+
+          <td class="py-3 px-4 text-right text-slate-500 font-mono">₹{{ "%.2f"|format(p.cost_paise / 100) }}</td>
+
+          <td class="py-3 px-4 text-right font-bold text-slate-900 font-mono">₹{{ "%.2f"|format(p.sell_paise / 100) }}</td>
+
+          <td class="py-3 px-4 text-right text-slate-400 line-through font-mono text-[11px]">₹{{ "%.2f"|format(p.mrp_paise / 100) }}</td>
+
+          <td class="py-3 px-4 text-center">
+            {% if p.stock_base == 0 %}
+            <span class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-bold bg-red-50 text-red-700 border border-red-200">
+              Out of Stock
+            </span>
+            {% elif p.stock_base <= p.reorder_base %}
+            <span class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-bold bg-amber-50 text-amber-700 border border-amber-200">
+              {{ p.stock_display }} (Low)
+            </span>
+            {% else %}
+            <span class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
+              {{ p.stock_display }}
+            </span>
+            {% endif %}
+          </td>
+
+          <td class="py-3 px-4 text-right">
+            <button
+              hx-get="/inventory/modal/inward?product_id={{ p.id }}"
+              hx-target="#modal-container"
+              class="px-2.5 py-1 text-[11px] font-semibold text-brand-700 hover:bg-brand-50 rounded-lg border border-brand-200 transition"
+            >
+              + Restock
+            </button>
+          </td>
+        </tr>
+        {% endfor %}
+      {% else %}
+        <tr>
+          <td colspan="8" class="py-12 text-center text-slate-400">
+            <i data-lucide="search-x" class="w-8 h-8 mx-auto text-slate-300 mb-2"></i>
+            No products match the search filter.
+          </td>
+        </tr>
+      {% endif %}
+    </tbody>
+  </table>
+</div>
